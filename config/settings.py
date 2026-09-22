@@ -23,6 +23,10 @@ load_dotenv(BASE_DIR / ".env", override=False)
 # are deliberately separate: DEBUG=False locally is a normal case (that is
 # how tests run) and it should not demand production secrets.
 ENV = os.environ.get("DJANGO_ENV", "local")
+if ENV not in ("local", "production"):
+    # A typo like "prod" used to fall through to local behaviour: a
+    # development secret and no hardening, silently, in production.
+    raise ImproperlyConfigured(f"DJANGO_ENV must be 'local' or 'production', got {ENV!r}")
 IS_PRODUCTION = ENV == "production"
 
 DEBUG = os.environ.get("DJANGO_DEBUG", "0") == "1" and not IS_PRODUCTION
@@ -96,7 +100,7 @@ else:
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
+            "NAME": str(BASE_DIR / "db.sqlite3"),
         }
     }
 
@@ -113,6 +117,7 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
@@ -156,6 +161,16 @@ SPECTACULAR_SETTINGS = {
     ),
 }
 
+# The throttle counters live here. The default local-memory cache is
+# per-process, so with several gunicorn workers each one counts separately.
+# Set a shared backend to make the limits global; see auth_views.py.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "licence-inventory",
+    }
+}
+
 # Hardening is switched on exactly in production. Locally these settings
 # would break http://localhost and the test run, hence the branch.
 if IS_PRODUCTION:
@@ -167,3 +182,6 @@ if IS_PRODUCTION:
     CSRF_COOKIE_SECURE = True
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
     X_FRAME_OPTIONS = "DENY"
+    # The container healthcheck talks plain HTTP to 127.0.0.1, so it must not
+    # be bounced to HTTPS. Everything else still is.
+    SECURE_REDIRECT_EXEMPT = [r"^healthz/$"]

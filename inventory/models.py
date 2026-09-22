@@ -156,7 +156,10 @@ class Event(models.Model):
     """
 
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
-    actor = models.CharField(max_length=100, default="system")
+    # 150 is Django's User.username length. At 100 a legitimate long
+    # username made the audit write fail and rolled back the whole business
+    # operation with it.
+    actor = models.CharField(max_length=150, default="system")
     action = models.CharField(max_length=64, db_index=True)
     unit = models.ForeignKey(Unit, on_delete=models.SET_NULL, null=True, blank=True, related_name="events")
     issue = models.ForeignKey(Issue, on_delete=models.SET_NULL, null=True, blank=True, related_name="events")

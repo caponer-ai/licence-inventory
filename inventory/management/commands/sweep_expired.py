@@ -10,6 +10,8 @@ Idempotent by construction: a second run in a row finds zero units, because
 the first one already moved everything it found.
 """
 
+from typing import Any
+
 from django.core.management.base import BaseCommand, CommandParser
 
 from inventory import services
@@ -21,7 +23,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser: CommandParser) -> None:
         parser.add_argument("--dry-run", action="store_true", help="print the list, change nothing")
 
-    def handle(self, *args: object, **options: object) -> None:
+    def handle(self, *args: str, **options: Any) -> None:
         if options["dry_run"]:
             stale = list(services.stale_issued_units())
             for unit in stale:

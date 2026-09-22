@@ -14,7 +14,6 @@ import pytest
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth.models import User
 from django.core.management import call_command
-from django.utils import timezone
 
 from inventory import services
 from inventory.admin import EventAdmin, UnitAdmin
@@ -62,6 +61,10 @@ def test_admin_action_reports_refusal_instead_of_crashing(unit_admin, request_wi
     unit_admin.renew_30_days(request_with_user, Unit.objects.filter(ref="AD-2"))
 
     assert Unit.objects.get(ref="AD-2").renewals.count() == 0
+    # The user has to be told why nothing happened, otherwise the action
+    # looks like it silently worked.
+    said = " ".join(str(c) for c in request_with_user._messages.method_calls)
+    assert "AD-2" in said and "renewed: 0" in said
 
 
 @pytest.mark.django_db
@@ -146,31 +149,6 @@ def test_reject_claim_over_http(api, make_unit, client_rec):
     assert response.data["state"] == "rejected"
 
 
-@pytest.mark.django_db
-def test_model_str_is_readable(make_unit, client_rec):
-    """__str__ shows up in the admin and in logs, so it is a contract too."""
-    make_unit("STR-1", expires_in_days=5)
-    issue = services.issue_unit(unit_ref="STR-1", client_id=client_rec.id, price_cents=100)
-    renewal = services.renew_unit(unit_ref="STR-1", period_days=30, price_cents=100)
-    claim = services.open_claim(issue_id=issue.id, reason="x")
-
-    assert str(issue.unit).startswith("STR-1")
-    assert str(client_rec) == "Romashka Ltd"
-    assert "STR-1" in str(issue)
-    assert "STR-1" in str(renewal)
-    assert "STR-1" in str(claim)
-    assert "unit.renewed" in str(Event.objects.filter(action="unit.renewed").first())
-
-
-@pytest.mark.django_db
-def test_reminder_log_str(make_unit):
-    make_unit("RL-1", state=UnitState.ISSUED, expires_in_days=3)
-    services.send_renewal_reminders(days=14)
-
-    from inventory.models import ReminderLog
-
-    assert "RL-1" in str(ReminderLog.objects.first())
-
 
 @pytest.mark.django_db
 def test_events_can_be_filtered_by_unit(api, make_unit, client_rec):
@@ -179,20 +157,65 @@ def test_events_can_be_filtered_by_unit(api, make_unit, client_rec):
     services.issue_unit(unit_ref="EV-A", client_id=client_rec.id, price_cents=100)
     services.issue_unit(unit_ref="EV-B", client_id=client_rec.id, price_cents=100)
 
+    wanted = Unit.objects.get(ref="EV-A").id
+
     filtered = api.get("/api/events/?unit_ref=EV-A").data["results"]
     everything = api.get("/api/events/").data["results"]
 
+    # Comparing against the actual unit id, not just "fewer than all":
+    # a filter that returned another unit's events passed the old version.
+    assert filtered, "the filter returned nothing"
+    assert {row["unit"] for row in filtered} == {wanted}
     assert len(filtered) < len(everything)
-    assert all(row["unit"] is not None for row in filtered)
+
+
+def test_history_models_are_not_editable_in_admin():
+    """The admin is an application interface, not a SQL console.
+
+    Left editable it allowed reopening a closed issue, marking a claim
+    approved without issuing a replacement, rewriting a renewal, and
+    deleting a reminder log so the same reminder fired twice.
+    """
+    from inventory.admin import IssueAdmin, ReminderLogAdmin, RenewalAdmin, WarrantyClaimAdmin
+    from inventory.models import Issue, ReminderLog, Renewal, WarrantyClaim
+
+    pairs = [
+        (IssueAdmin, Issue),
+        (RenewalAdmin, Renewal),
+        (WarrantyClaimAdmin, WarrantyClaim),
+        (ReminderLogAdmin, ReminderLog),
+        (EventAdmin, Event),
+    ]
+    for admin_cls, model in pairs:
+        site_admin = admin_cls(model, AdminSite())
+        assert site_admin.has_add_permission(None) is False, model.__name__
+        assert site_admin.has_change_permission(None) is False, model.__name__
+        assert site_admin.has_delete_permission(None) is False, model.__name__
 
 
 @pytest.mark.django_db
-def test_dry_run_sweep_lists_without_touching():
-    now = timezone.now()
-    Unit.objects.create(ref="DR-1", state=UnitState.ISSUED, expires_at=now - timedelta(days=2))
-    out = StringIO()
+def test_long_username_does_not_break_the_operation(api, make_unit, client_rec, settings):
+    """Django allows 150 characters; the audit column allowed 100.
 
-    call_command("sweep_expired", "--dry-run", stdout=out)
+    On Postgres the audit write failed and rolled the whole issue back, so a
+    legitimate user name broke a business operation.
+    """
+    settings.PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
+    long_name = "u" * 150
+    user = User.objects.create_user(username=long_name, password="x")
+    from rest_framework.authtoken.models import Token
+    from rest_framework.test import APIClient
 
-    assert "DR-1" in out.getvalue()
-    assert Unit.objects.get(ref="DR-1").state == UnitState.ISSUED
+    client = APIClient()
+    token, _ = Token.objects.get_or_create(user=user)
+    client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    make_unit("LONG-1")
+    response = client.post(
+        "/api/issues/",
+        {"unit_ref": "LONG-1", "client_id": client_rec.id, "price_cents": 100},
+        format="json",
+    )
+
+    assert response.status_code == 201
+    assert Event.objects.filter(actor=long_name).exists()

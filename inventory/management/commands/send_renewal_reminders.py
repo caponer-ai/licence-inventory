@@ -9,6 +9,8 @@ times it runs. It is therefore safe to schedule hourly, and restarting cron
 after a failure never duplicates a send.
 """
 
+from typing import Any
+
 from django.core.management.base import BaseCommand, CommandParser
 
 from inventory import services
@@ -25,7 +27,7 @@ class Command(BaseCommand):
             help="print the list and mark nothing",
         )
 
-    def handle(self, *args: object, **options: object) -> None:
+    def handle(self, *args: str, **options: Any) -> None:
         days = options["days"]
 
         if options["dry_run"]:

@@ -13,6 +13,7 @@ import pytest
 
 from inventory import services
 from inventory.models import Unit
+from inventory.serializers import UnitSerializer
 from inventory.states import UnitState
 
 
@@ -142,3 +143,63 @@ def test_unknown_unit_returns_404_through_global_handler(api, client_rec):
     )
     assert response.status_code == 404
     assert response.data["code"] == "NotFound"
+
+
+@pytest.mark.django_db
+def test_patch_does_not_roll_back_a_concurrent_renewal(api, make_unit):
+    """read_only_fields blocks accepting a value, not writing one.
+
+    The default ModelSerializer.update() saves every column from the object
+    it loaded at the start of the request. A PATCH that only edits a note
+    therefore overwrote an expiry that a renewal had committed a moment
+    earlier: the Renewal row and the audit entry survived, the actual date
+    rolled back, and nothing anywhere reported an error.
+    """
+    unit = make_unit("PT-1", state=UnitState.ISSUED, expires_in_days=10)
+
+    stale = UnitSerializer(Unit.objects.get(ref="PT-1"), data={"note": "just a note"}, partial=True)
+    stale.is_valid(raise_exception=True)
+
+    services.renew_unit(unit_ref="PT-1", period_days=365, price_cents=100)
+    renewed_to = Unit.objects.get(ref="PT-1").expires_at
+
+    stale.save()
+
+    unit.refresh_from_db()
+    assert unit.expires_at == renewed_to, "the note update rolled the renewal back"
+    assert unit.note == "just a note"
+
+
+@pytest.mark.django_db
+def test_unknown_state_filter_is_a_client_error(api, make_unit):
+    """An empty list for a typo sends the caller debugging their data."""
+    make_unit("FLT-1")
+    assert api.get("/api/units/?state=avaliable").status_code == 400
+    assert api.get("/api/units/?state=available").status_code == 200
+
+
+@pytest.mark.django_db
+def test_absurd_horizon_is_refused_before_it_overflows(api):
+    """timedelta overflows above roughly 2.7 million days."""
+    assert api.get("/api/units/expiring/?days=1000000000").status_code == 400
+    assert api.get("/api/units/expiring/?days=3650").status_code == 200
+
+
+@pytest.mark.django_db
+def test_empty_unit_ref_filter_is_refused(api):
+    assert api.get("/api/events/?unit_ref=").status_code == 400
+
+
+@pytest.mark.django_db
+def test_schema_documents_the_real_request_body(api):
+    """The serializer built inside a method does not describe it by itself.
+
+    Without explicit @extend_schema the schema advertised IssueSerializer
+    for POST /api/issues/, which is the response shape, not the request.
+    """
+    import json
+
+    schema = json.loads(api.get("/api/schema/?format=json").content)
+    body = schema["paths"]["/api/issues/"]["post"]["requestBody"]
+    ref = body["content"]["application/json"]["schema"]["$ref"]
+    assert ref.endswith("IssueCreate"), ref

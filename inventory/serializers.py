@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Client, Event, Issue, Renewal, Unit, WarrantyClaim
+from .models import Client, Event, Issue, Unit, WarrantyClaim
 
 
 class ClientSerializer(serializers.ModelSerializer):
@@ -28,6 +28,31 @@ class UnitSerializer(serializers.ModelSerializer):
         # expires_at changes only through `renew`, so that every new date
         # has a Renewal row and an entry in the audit log behind it.
         read_only_fields = ["state", "expires_at"]
+
+    #: The fields a plain update is allowed to touch. Everything else about a
+    #: unit changes through a domain operation.
+    WRITABLE = ("ref", "tier", "cost_cents", "acquired_at", "note")
+
+    def update(self, instance, validated_data):
+        """Write only the writable fields, and only those.
+
+        ``read_only_fields`` stops a value from being *accepted*, it does not
+        stop it from being *written*. The default ModelSerializer.update()
+        calls ``instance.save()`` with no ``update_fields``, so Django writes
+        every column from the in-memory object, including the expiry it read
+        at the start of the request.
+
+        The consequence is a lost update with no error anywhere: a PATCH that
+        only edits a note overwrites a renewal that committed a moment
+        earlier. The Renewal row and the audit entry survive, the actual
+        expiry silently rolls back, and the history starts lying.
+        Covered by `test_patch_does_not_roll_back_a_concurrent_renewal`.
+        """
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        touched = [f for f in self.WRITABLE if f in validated_data]
+        instance.save(update_fields=[*touched, "updated_at"] if touched else None)
+        return instance
 
 
 class IssueSerializer(serializers.ModelSerializer):
@@ -70,20 +95,6 @@ class ClaimCreateSerializer(serializers.Serializer):
 
 class ClaimApproveSerializer(serializers.Serializer):
     replacement_ref = serializers.CharField(max_length=64)
-
-
-class RenewalSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Renewal
-        fields = [
-            "id",
-            "unit",
-            "period_days",
-            "price_cents",
-            "previous_expires_at",
-            "new_expires_at",
-            "created_at",
-        ]
 
 
 class WarrantyClaimSerializer(serializers.ModelSerializer):

@@ -125,3 +125,41 @@ def test_non_numeric_id_returns_404_not_500(api):
     assert api.post("/api/issues/abc/claim/", {"reason": "x"}, format="json").status_code == 404
     assert api.post("/api/claims/abc/approve/", {"replacement_ref": "z"}, format="json").status_code == 404
     assert api.post("/api/claims/abc/reject/", format="json").status_code == 404
+
+
+@pytest.mark.django_db
+def test_negative_price_is_a_domain_error_not_a_crash(make_unit, client_rec):
+    """The CHECK constraint stops the row, but an IntegrityError is a 500.
+
+    The service is also reached from a command and from the admin, where no
+    serializer runs, so the rule lives in the service.
+    """
+    make_unit("NEG-1")
+    with pytest.raises(services.DomainError):
+        services.issue_unit(unit_ref="NEG-1", client_id=client_rec.id, price_cents=-500)
+    assert Unit.objects.get(ref="NEG-1").state == UnitState.AVAILABLE
+
+
+@pytest.mark.django_db
+def test_absurd_warranty_is_refused(make_unit, client_rec):
+    make_unit("NEG-2")
+    with pytest.raises(services.DomainError):
+        services.issue_unit(
+            unit_ref="NEG-2", client_id=client_rec.id, price_cents=100, warranty_days=100000
+        )
+
+
+@pytest.mark.django_db
+def test_rejection_is_visible_in_the_unit_history(api, make_unit, client_rec):
+    """/api/events/?unit_ref=... answers "what happened to my account".
+
+    The rejection event used to be written without a unit, so it was the one
+    thing missing from that answer.
+    """
+    make_unit("REJ-1")
+    issue = services.issue_unit(unit_ref="REJ-1", client_id=client_rec.id, price_cents=100)
+    claim = services.open_claim(issue_id=issue.id, reason="x")
+    services.reject_claim(claim_id=claim.id)
+
+    actions = [row["action"] for row in api.get("/api/events/?unit_ref=REJ-1").data["results"]]
+    assert "claim.rejected" in actions

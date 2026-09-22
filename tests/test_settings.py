@@ -68,3 +68,22 @@ def test_local_run_needs_no_secrets():
     """The README promises a one-command start. Check that it is not a lie."""
     result = run_manage(["check"], {"DJANGO_ENV": "local", "DJANGO_SECRET_KEY": ""})
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.slow
+def test_unknown_env_refuses_to_start():
+    """A typo used to fall through to local: dev secret, no hardening."""
+    result = run_manage(["check"], {"DJANGO_ENV": "prod"})
+    assert result.returncode != 0
+    assert "DJANGO_ENV" in result.stdout + result.stderr
+
+
+@pytest.mark.slow
+def test_seed_demo_refuses_to_run_in_production():
+    """The command creates a staff user whose password is in the README."""
+    result = run_manage(
+        ["seed_demo"],
+        {"DJANGO_ENV": "production", "DJANGO_SECRET_KEY": secrets.token_urlsafe(50)},
+    )
+    assert result.returncode != 0
+    assert "production" in (result.stdout + result.stderr).lower()

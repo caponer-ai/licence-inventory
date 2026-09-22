@@ -9,9 +9,11 @@ the API does not hit a 401.
 """
 
 from datetime import timedelta
+from typing import Any
 
+from django.conf import settings
 from django.contrib.auth.models import User
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
@@ -25,7 +27,13 @@ class Command(BaseCommand):
     help = "Fill the database with demonstration data"
 
     @transaction.atomic
-    def handle(self, *args: object, **options: object) -> None:
+    def handle(self, *args: str, **options: Any) -> None:
+        # This command creates a staff user with a password printed in the
+        # README. On a real instance that is a back door, and the README
+        # tells people to run the command immediately after migrate.
+        if settings.IS_PRODUCTION:
+            raise CommandError("seed_demo creates a demo staff user and never runs in production")
+
         if Unit.objects.exists():
             self.stdout.write(self.style.WARNING("database is not empty, skipping demo data"))
             return

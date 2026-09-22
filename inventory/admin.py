@@ -6,6 +6,29 @@ from . import services
 from .models import Client, Event, Issue, ReminderLog, Renewal, Unit, WarrantyClaim
 
 
+class HistoryOnly(admin.ModelAdmin):
+    """Records that describe what happened, not what should happen next.
+
+    The admin is a normal application interface, not a DBA's SQL console, so
+    it has to hold the same invariants the API holds. Left editable, it let
+    anyone reopen a closed issue, move a claim to approved without issuing a
+    replacement, rewrite a renewal, or delete a reminder log and make the
+    same reminder fire twice.
+
+    Domain changes go through the service layer, which writes history. These
+    screens only show it.
+    """
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(self, request: HttpRequest, obj: object = None) -> bool:
+        return False
+
+    def has_delete_permission(self, request: HttpRequest, obj: object = None) -> bool:
+        return False
+
+
 @admin.register(Unit)
 class UnitAdmin(admin.ModelAdmin):
     list_display = ("ref", "tier", "state", "expires_at", "cost_cents")
@@ -38,39 +61,30 @@ class ClientAdmin(admin.ModelAdmin):
 
 
 @admin.register(Issue)
-class IssueAdmin(admin.ModelAdmin):
+class IssueAdmin(HistoryOnly):
     list_display = ("unit", "client", "issued_at", "warranty_until", "price_cents", "is_active")
     list_filter = ("is_active",)
     search_fields = ("unit__ref", "client__name")
 
 
 @admin.register(Renewal)
-class RenewalAdmin(admin.ModelAdmin):
+class RenewalAdmin(HistoryOnly):
     list_display = ("unit", "period_days", "price_cents", "previous_expires_at", "new_expires_at")
 
 
 @admin.register(WarrantyClaim)
-class WarrantyClaimAdmin(admin.ModelAdmin):
+class WarrantyClaimAdmin(HistoryOnly):
     list_display = ("issue", "state", "replacement_unit", "created_at", "resolved_at")
     list_filter = ("state",)
 
 
 @admin.register(Event)
-class EventAdmin(admin.ModelAdmin):
+class EventAdmin(HistoryOnly):
     list_display = ("created_at", "actor", "action", "unit", "issue")
     list_filter = ("action",)
     search_fields = ("unit__ref", "actor")
 
-    def has_add_permission(self, request: HttpRequest) -> bool:
-        return False
-
-    def has_change_permission(self, request: HttpRequest, obj: object = None) -> bool:
-        return False
-
-    def has_delete_permission(self, request: HttpRequest, obj: object = None) -> bool:
-        return False
-
 
 @admin.register(ReminderLog)
-class ReminderLogAdmin(admin.ModelAdmin):
+class ReminderLogAdmin(HistoryOnly):
     list_display = ("unit", "kind", "for_expires_at", "created_at")

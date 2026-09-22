@@ -10,7 +10,7 @@ an event to the audit log. There is no path that changes state silently.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.db import transaction
 from django.db.models import QuerySet
@@ -86,6 +86,16 @@ def issue_unit(
     partial unique index in the database is the second line of defence, for
     the day somebody calls the logic around this function.
     """
+    # The model has a CHECK constraint, so a negative price never reaches the
+    # table. But an IntegrityError becomes a 500, and a caller passing a bad
+    # price is a violated business rule, not an outage. The service is also
+    # reached from a management command and from the admin, where a serializer
+    # never runs.
+    if price_cents < 0:
+        raise DomainError("price cannot be negative")
+    if not 0 <= warranty_days <= 365:
+        raise DomainError("warranty must be between 0 and 365 days")
+
     unit = Unit.objects.select_for_update().get(ref=unit_ref)
     client = Client.objects.get(pk=client_id)
 
@@ -205,8 +215,21 @@ def approve_claim(*, claim_id: int, replacement_ref: str, actor: str = "system")
 
     The replacement gets a fresh warranty counted from the replacement date.
     The old issue is closed but never deleted: the history has to stay whole.
+
+    The claim row is locked, and that lock is the whole point. Without it two
+    concurrent approvals of the same claim with different replacement refs
+    both read state=open, both pass the check, and both issue a free unit.
+    Neither index catches that: the two replacements are different units, so
+    the partial index on active issues is satisfied, and no second open claim
+    is ever created, so the one_open_claim_per_issue index is satisfied too.
+    One payment, two free replacements, exactly the hole this project claims
+    to have closed.
     """
-    claim = WarrantyClaim.objects.select_related("issue__unit", "issue__client").get(pk=claim_id)
+    claim = (
+        WarrantyClaim.objects.select_for_update()
+        .select_related("issue__unit", "issue__client")
+        .get(pk=claim_id)
+    )
     if claim.state != ClaimState.OPEN:
         raise DomainError(f"claim {claim_id} is already {claim.state}")
 
@@ -242,13 +265,18 @@ def approve_claim(*, claim_id: int, replacement_ref: str, actor: str = "system")
 
 @transaction.atomic
 def reject_claim(*, claim_id: int, actor: str = "system") -> WarrantyClaim:
-    claim = WarrantyClaim.objects.get(pk=claim_id)
+    claim = (
+        WarrantyClaim.objects.select_for_update().select_related("issue__unit").get(pk=claim_id)
+    )
     if claim.state != ClaimState.OPEN:
         raise DomainError(f"claim {claim_id} is already {claim.state}")
     claim.state = ClaimState.REJECTED
     claim.resolved_at = timezone.now()
     claim.save(update_fields=["state", "resolved_at", "updated_at"])
-    log("claim.rejected", actor=actor, issue=claim.issue)
+    # The unit is passed so that /api/events/?unit_ref=... answers the
+    # question "what happened to my account" completely. Without it a
+    # rejection was the one event missing from that history.
+    log("claim.rejected", actor=actor, unit=claim.issue.unit, issue=claim.issue)
     return claim
 
 
@@ -350,15 +378,23 @@ def send_renewal_reminders(
     if not units:
         return []
 
+    # expiring_units filters on expires_at__isnull=False, but a queryset
+    # filter does not narrow the field type. The value is pulled out once,
+    # with the narrowing in the comprehension, instead of scattering asserts
+    # through the batch builders below.
+    expiries: dict[int, datetime] = {
+        u.id: u.expires_at for u in units if u.expires_at is not None
+    }
+
     already = set(
         ReminderLog.objects.filter(kind="renewal", unit__in=units).values_list("unit_id", "for_expires_at")
     )
-    fresh = [u for u in units if (u.id, u.expires_at) not in already]
+    fresh = [u for u in units if (u.id, expiries[u.id]) not in already]
     if not fresh:
         return []
 
     ReminderLog.objects.bulk_create(
-        [ReminderLog(unit=u, kind="renewal", for_expires_at=u.expires_at) for u in fresh]
+        [ReminderLog(unit=u, kind="renewal", for_expires_at=expiries[u.id]) for u in fresh]
     )
     Event.objects.bulk_create(
         [
@@ -366,7 +402,7 @@ def send_renewal_reminders(
                 action="reminder.sent",
                 actor=actor,
                 unit=u,
-                payload={"expires_at": u.expires_at.isoformat()},
+                payload={"expires_at": expiries[u.id].isoformat()},
             )
             for u in fresh
         ]

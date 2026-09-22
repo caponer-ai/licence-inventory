@@ -6,11 +6,14 @@ service. Errors are translated into status codes by a single handler in
 to forget one in a new action.
 """
 
+from typing import Any
+
 from django.db import connection
 from django.db.models import QuerySet
 from drf_spectacular.utils import extend_schema
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -29,6 +32,7 @@ from .serializers import (
     UnitSerializer,
     WarrantyClaimSerializer,
 )
+from .states import UnitState
 
 
 def actor_of(request) -> str:
@@ -60,12 +64,20 @@ class UnitViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminForDestroy]
 
     def get_queryset(self) -> QuerySet:
+        """A filter value that is not a state is a client bug, not an empty
+        result. Returning [] for ?state=avaliable hides the typo and the
+        caller debugs their data instead of their spelling."""
         qs = super().get_queryset()
         state = self.request.query_params.get("state")
-        return qs.filter(state=state) if state else qs
+        if state is None:
+            return qs
+        if state not in UnitState.values:
+            raise ValidationError({"state": f"unknown state {state!r}"})
+        return qs.filter(state=state)
 
+    @extend_schema(request=RenewSerializer, responses={200: None})
     @action(detail=True, methods=["post"])
-    def renew(self, request: Request, ref: str | None = None) -> Response:
+    def renew(self, request: Request, ref: str = "") -> Response:
         payload = RenewSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         renewal = services.renew_unit(unit_ref=ref, actor=actor_of(request), **payload.validated_data)
@@ -93,9 +105,11 @@ class UnitViewSet(viewsets.ModelViewSet):
                 {"detail": "days must be an integer", "code": "BadRequest"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if days < 0:
+        # The upper bound is not decoration: timedelta overflows above
+        # roughly 2.7 million days, and ?days=1000000000 used to reach it.
+        if not 0 <= days <= 3650:
             return Response(
-                {"detail": "days cannot be negative", "code": "BadRequest"},
+                {"detail": "days must be between 0 and 3650", "code": "BadRequest"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -113,14 +127,16 @@ class IssueViewSet(
     queryset = Issue.objects.select_related("unit", "client")
     serializer_class = IssueSerializer
 
-    def create(self, request: Request, *args: object, **kwargs: object) -> Response:
+    @extend_schema(request=IssueCreateSerializer, responses={201: IssueSerializer})
+    def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         payload = IssueCreateSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         issue = services.issue_unit(actor=actor_of(request), **payload.validated_data)
         return Response(IssueSerializer(issue).data, status=status.HTTP_201_CREATED)
 
+    @extend_schema(request=ClaimCreateSerializer, responses={201: WarrantyClaimSerializer})
     @action(detail=True, methods=["post"])
-    def claim(self, request: Request, pk: str | None = None) -> Response:
+    def claim(self, request: Request, pk: str = "") -> Response:
         payload = ClaimCreateSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         # get_object instead of int(pk): DRF accepts anything without a
@@ -139,8 +155,9 @@ class ClaimViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
     queryset = WarrantyClaim.objects.select_related("issue__unit", "replacement_unit")
     serializer_class = WarrantyClaimSerializer
 
+    @extend_schema(request=ClaimApproveSerializer, responses={200: IssueSerializer})
     @action(detail=True, methods=["post"])
-    def approve(self, request: Request, pk: str | None = None) -> Response:
+    def approve(self, request: Request, pk: str = "") -> Response:
         payload = ClaimApproveSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         claim = self.get_object()
@@ -151,8 +168,9 @@ class ClaimViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
         )
         return Response(IssueSerializer(new_issue).data, status=status.HTTP_200_OK)
 
+    @extend_schema(request=None, responses={200: WarrantyClaimSerializer})
     @action(detail=True, methods=["post"])
-    def reject(self, request: Request, pk: str | None = None) -> Response:
+    def reject(self, request: Request, pk: str = "") -> Response:
         claim = services.reject_claim(claim_id=self.get_object().pk, actor=actor_of(request))
         return Response(WarrantyClaimSerializer(claim).data)
 
@@ -166,7 +184,11 @@ class EventViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     def get_queryset(self) -> QuerySet:
         qs = super().get_queryset()
         unit_ref = self.request.query_params.get("unit_ref")
-        return qs.filter(unit__ref=unit_ref) if unit_ref else qs
+        if unit_ref is None:
+            return qs
+        if not unit_ref:
+            raise ValidationError({"unit_ref": "must not be empty"})
+        return qs.filter(unit__ref=unit_ref)
 
 
 @extend_schema(

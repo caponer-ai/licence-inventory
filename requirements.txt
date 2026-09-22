@@ -2,4 +2,7 @@ Django>=5.0,<6.0
 djangorestframework>=3.15
 drf-spectacular>=0.27
 python-dotenv>=1.0
+# Runtime, not dev: docker-compose sets POSTGRES_DB, so the image itself
+# needs the driver. Without it the documented Docker path dies on startup.
+psycopg[binary]>=3.2
 gunicorn>=22.0

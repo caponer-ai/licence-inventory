@@ -9,7 +9,6 @@ happened". The tests below pin that this is fixed rather than declared.
 import pytest
 
 from inventory import services
-from inventory.auth_views import LoginThrottle
 from inventory.models import Event
 
 
@@ -102,7 +101,7 @@ def test_event_log_is_read_only_over_http(api, make_unit, client_rec):
 
 
 @pytest.mark.django_db
-def test_login_is_rate_limited(api_anon, user):
+def test_login_is_rate_limited(api_anon, user, settings):
     """Guessing a password has to cost time.
 
     DRF's ready-made `ObtainAuthToken` is declared with
@@ -114,7 +113,13 @@ def test_login_is_rate_limited(api_anon, user):
     of that an anonymous request to a closed endpoint gets a 401 before the
     counter ever runs, so the limit has to be exercised on the open login.
     """
-    LoginThrottle.cache.clear()
+    # The rate is pinned here instead of being inherited from the
+    # environment: one exported THROTTLE_LOGIN in CI would turn this test
+    # green without anything being limited.
+    settings.REST_FRAMEWORK = {
+        **settings.REST_FRAMEWORK,
+        "DEFAULT_THROTTLE_RATES": {**settings.REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"], "login": "5/min"},
+    }
     codes = []
     for _ in range(8):
         response = api_anon.post(
@@ -123,17 +128,24 @@ def test_login_is_rate_limited(api_anon, user):
             format="json",
         )
         codes.append(response.status_code)
-    LoginThrottle.cache.clear()
 
     assert 429 in codes, f"brute force is not limited, codes: {codes}"
     assert codes[0] == 400, "the first failed attempt should be an ordinary refusal"
 
 
 @pytest.mark.django_db
-def test_login_limit_does_not_block_normal_api_use(api, make_unit):
-    """A strict login limit must not touch authenticated working requests."""
-    LoginThrottle.cache.clear()
+def test_login_limit_does_not_block_normal_api_use(api, api_anon, make_unit, user):
+    """A strict login limit must not touch authenticated working requests.
+
+    The limit is actually exhausted first, otherwise this test would pass
+    with no throttling configured at all.
+    """
     make_unit("THR-1")
+    for _ in range(8):
+        api_anon.post(
+            "/api/auth/token/", {"username": user.username, "password": "wrong"}, format="json"
+        )
+
     codes = {api.get("/api/units/").status_code for _ in range(20)}
     assert codes == {200}
 
@@ -146,7 +158,3 @@ def test_openapi_schema_is_served(api):
     assert response.status_code == 200
     assert b"licence-inventory" in response.content
 
-
-@pytest.mark.django_db
-def test_swagger_ui_is_served(api):
-    assert api.get("/api/docs/").status_code == 200

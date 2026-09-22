@@ -19,6 +19,11 @@ jobs:
         run: python manage.py makemigrations --check --dry-run
       - name: Lint
         run: ruff check .
+      - name: Types
+        # The annotations are in the code either way; running mypy is what
+        # turns them from a claim into a checked one. It found six false
+        # annotations the first time it ran.
+        run: mypy inventory config
       - name: Production checklist must be clean
         env:
           DJANGO_ENV: production
@@ -62,3 +67,41 @@ jobs:
           POSTGRES_HOST: 127.0.0.1
           POSTGRES_PORT: 5432
         run: pytest -q --cov --cov-config=.coveragerc
+      - name: Concurrency tests must actually run on Postgres
+        if: matrix.database == 'postgres'
+        env:
+          POSTGRES_DB: licence_inventory
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: 5432
+        # Without this the whole file could be skipped by a bad marker and
+        # nobody would notice: a skipped test is a green test.
+        run: pytest tests/test_concurrency.py -q --no-cov --co -q | grep -q "3 tests collected"
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The README documents a Docker path with Postgres. Until this job
+      # existed the image was never built, and the driver it needs was only
+      # in the dev requirements: the documented start was dead on arrival.
+      - name: Build and start the documented stack
+        run: docker compose up -d --build
+      - name: Wait for the service
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8000/healthz/ > /dev/null; then exit 0; fi
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+      - name: Migrations and demo data inside the container
+        run: |
+          docker compose exec -T web python manage.py migrate
+          docker compose exec -T web python manage.py seed_demo
+      - name: The heartbeat really talks to Postgres
+        run: curl -fsS http://localhost:8000/healthz/ | grep -q '"database": *"ok"'
+      - name: Stop
+        if: always()
+        run: docker compose down -v

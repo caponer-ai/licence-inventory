@@ -22,3 +22,12 @@ exclude_lines =
     pragma: no cover
     raise NotImplementedError
     if TYPE_CHECKING:
+    # __str__ is presentation. Tests for it catch a string edit and nothing
+    # else: not one defect in this project's history would have been found
+    # by them. Two reviewers said so independently, the tests were deleted,
+    # and the honest follow-up is to stop measuring what is not tested
+    # rather than to keep dead tests for a percentage.
+    def __str__
+    # Runs only under DJANGO_ENV=production and is checked by the subprocess
+    # tests in tests/test_settings.py, which coverage cannot see.
+    if settings.IS_PRODUCTION:
