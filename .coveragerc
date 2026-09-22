@@ -1,0 +1,24 @@
+[run]
+source = inventory,config
+omit =
+    */migrations/*
+    */tests/*
+    config/wsgi.py
+    manage.py
+
+[report]
+# Покриття це індикатор, а не мета. Поріг стоїть не щоб мати красиве
+# число, а щоб падіння покриття було видно в CI разом з причиною.
+#
+# До 100 не дотягує свідомо. Непокритими лишаються рядки config/settings.py,
+# які виконуються лише при DJANGO_ENV=production: вони перевірені тестами в
+# tests/test_settings.py, але ті піднімають окремий процес, а coverage у
+# дочірні процеси не заглядає. Поставити там pragma означало б сховати
+# правду замість того щоб її пояснити.
+fail_under = 97
+show_missing = true
+skip_covered = true
+exclude_lines =
+    pragma: no cover
+    raise NotImplementedError
+    if TYPE_CHECKING:

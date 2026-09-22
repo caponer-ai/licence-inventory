@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from django.db import transaction
+from django.db.models import QuerySet
 from django.utils import timezone
 
 from .models import Client, Event, Issue, ReminderLog, Renewal, Unit, WarrantyClaim
@@ -271,7 +272,7 @@ def reject_claim(*, claim_id: int, actor: str = "system") -> WarrantyClaim:
 DEFAULT_GRACE_DAYS = 30
 
 
-def expiring_units(days: int, *, grace_days: int = DEFAULT_GRACE_DAYS):
+def expiring_units(days: int, *, grace_days: int = DEFAULT_GRACE_DAYS) -> QuerySet[Unit]:
     """Одиниці, у яких строк спливає протягом ``days`` днів.
 
     Вікно двостороннє. Верхня межа очевидна: ``зараз + days``. Нижня
@@ -290,7 +291,7 @@ def expiring_units(days: int, *, grace_days: int = DEFAULT_GRACE_DAYS):
     ).order_by("expires_at")
 
 
-def stale_issued_units():
+def stale_issued_units() -> QuerySet[Unit]:
     """Видані одиниці, у яких строк уже вичерпано. Без блокування, для перегляду."""
     return Unit.objects.filter(
         state=UnitState.ISSUED, expires_at__isnull=False, expires_at__lte=timezone.now()

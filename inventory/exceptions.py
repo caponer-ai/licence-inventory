@@ -17,7 +17,7 @@ from rest_framework.views import exception_handler as drf_exception_handler
 from .services import DomainError
 
 
-def exception_handler(exc, context):
+def exception_handler(exc: Exception, context: dict) -> Response | None:
     """Доменні помилки це відповідь, а не аварія.
 
     ``ProtectedError`` окремо: спроба видалити те, на що є посилання,

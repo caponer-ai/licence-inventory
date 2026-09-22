@@ -10,7 +10,7 @@
 бо перший уже перевів усі знайдені.
 """
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandParser
 
 from inventory import services
 
@@ -18,10 +18,10 @@ from inventory import services
 class Command(BaseCommand):
     help = "Перевести прострочені видані одиниці у стан expired"
 
-    def add_arguments(self, parser):
+    def add_arguments(self, parser: CommandParser) -> None:
         parser.add_argument("--dry-run", action="store_true", help="показати список і нічого не міняти")
 
-    def handle(self, *args, **options):
+    def handle(self, *args: object, **options: object) -> None:
         if options["dry_run"]:
             stale = list(services.stale_issued_units())
             for unit in stale:

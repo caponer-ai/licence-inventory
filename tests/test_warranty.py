@@ -92,3 +92,15 @@ def test_rejected_claim_leaves_unit_issued(make_unit, client_rec):
     assert WarrantyClaim.objects.get(pk=claim.id).state == ClaimState.REJECTED
     assert issue.is_active is True
     assert issue.unit.state == UnitState.ISSUED
+
+
+@pytest.mark.django_db
+def test_claim_cannot_be_rejected_twice(make_unit, client_rec):
+    """Дзеркало до подвійного схвалення: відхилити двічі теж не можна."""
+    make_unit("W-6")
+    issue = services.issue_unit(unit_ref="W-6", client_id=client_rec.id, price_cents=100)
+    claim = services.open_claim(issue_id=issue.id, reason="x")
+    services.reject_claim(claim_id=claim.id)
+
+    with pytest.raises(services.DomainError):
+        services.reject_claim(claim_id=claim.id)

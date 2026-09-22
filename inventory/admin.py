@@ -1,4 +1,6 @@
 from django.contrib import admin, messages
+from django.db.models import QuerySet
+from django.http import HttpRequest
 
 from . import services
 from .models import Client, Event, Issue, ReminderLog, Renewal, Unit, WarrantyClaim
@@ -16,7 +18,7 @@ class UnitAdmin(admin.ModelAdmin):
     actions = ["renew_30_days"]
 
     @admin.action(description="Продовити на 30 днів")
-    def renew_30_days(self, request, queryset):
+    def renew_30_days(self, request: HttpRequest, queryset: QuerySet) -> None:
         actor = request.user.username or "admin"
         done = 0
         for unit in queryset:
@@ -73,13 +75,13 @@ class EventAdmin(admin.ModelAdmin):
     list_filter = ("action",)
     search_fields = ("unit__ref", "actor")
 
-    def has_add_permission(self, request):
+    def has_add_permission(self, request: HttpRequest) -> bool:
         return False
 
-    def has_change_permission(self, request, obj=None):
+    def has_change_permission(self, request: HttpRequest, obj: object = None) -> bool:
         return False
 
-    def has_delete_permission(self, request, obj=None):
+    def has_delete_permission(self, request: HttpRequest, obj: object = None) -> bool:
         return False
 
 

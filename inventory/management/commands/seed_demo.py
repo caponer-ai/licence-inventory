@@ -23,7 +23,7 @@ class Command(BaseCommand):
     help = "Заповнити базу демонстраційними даними"
 
     @transaction.atomic
-    def handle(self, *args, **options):
+    def handle(self, *args: object, **options: object) -> None:
         if Unit.objects.exists():
             self.stdout.write(self.style.WARNING("база не порожня, демо не заливаю"))
             return

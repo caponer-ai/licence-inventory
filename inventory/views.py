@@ -6,10 +6,12 @@
 """
 
 from django.db import connection
+from django.db.models import QuerySet
 from drf_spectacular.utils import extend_schema
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny
+from rest_framework.request import Request
 from rest_framework.response import Response
 
 from . import services
@@ -55,13 +57,13 @@ class UnitViewSet(viewsets.ModelViewSet):
     lookup_field = "ref"
     permission_classes = [IsAdminForDestroy]
 
-    def get_queryset(self):
+    def get_queryset(self) -> QuerySet:
         qs = super().get_queryset()
         state = self.request.query_params.get("state")
         return qs.filter(state=state) if state else qs
 
     @action(detail=True, methods=["post"])
-    def renew(self, request, ref=None):
+    def renew(self, request: Request, ref: str | None = None) -> Response:
         payload = RenewSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         renewal = services.renew_unit(unit_ref=ref, actor=actor_of(request), **payload.validated_data)
@@ -75,7 +77,7 @@ class UnitViewSet(viewsets.ModelViewSet):
         )
 
     @action(detail=False, methods=["get"])
-    def expiring(self, request):
+    def expiring(self, request: Request) -> Response:
         """Пагінація така сама, як у звичайного списку.
 
         Різна форма відповіді на двох сусідніх ендпоінтах змушує клієнта
@@ -108,14 +110,14 @@ class IssueViewSet(
     queryset = Issue.objects.select_related("unit", "client")
     serializer_class = IssueSerializer
 
-    def create(self, request, *args, **kwargs):
+    def create(self, request: Request, *args: object, **kwargs: object) -> Response:
         payload = IssueCreateSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         issue = services.issue_unit(actor=actor_of(request), **payload.validated_data)
         return Response(IssueSerializer(issue).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"])
-    def claim(self, request, pk=None):
+    def claim(self, request: Request, pk: str | None = None) -> Response:
         payload = ClaimCreateSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         # get_object, а не int(pk): DRF пропускає в pk будь-що без
@@ -134,7 +136,7 @@ class ClaimViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
     serializer_class = WarrantyClaimSerializer
 
     @action(detail=True, methods=["post"])
-    def approve(self, request, pk=None):
+    def approve(self, request: Request, pk: str | None = None) -> Response:
         payload = ClaimApproveSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         claim = self.get_object()
@@ -146,7 +148,7 @@ class ClaimViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
         return Response(IssueSerializer(new_issue).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"])
-    def reject(self, request, pk=None):
+    def reject(self, request: Request, pk: str | None = None) -> Response:
         claim = services.reject_claim(claim_id=self.get_object().pk, actor=actor_of(request))
         return Response(WarrantyClaimSerializer(claim).data)
 
@@ -171,7 +173,7 @@ class EventViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 @throttle_classes([])
-def healthz(request):
+def healthz(request: Request) -> Response:
     """Пульс, який справді щось перевіряє.
 
     Ендпоінт, що завжди відповідає «ok», марний: балансувальник вважає

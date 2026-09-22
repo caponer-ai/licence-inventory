@@ -9,7 +9,7 @@
 після збою нічого не задублює.
 """
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandParser
 
 from inventory import services
 
@@ -17,7 +17,7 @@ from inventory import services
 class Command(BaseCommand):
     help = "Надіслати нагадування про продовження одиниць, у яких спливає строк"
 
-    def add_arguments(self, parser):
+    def add_arguments(self, parser: CommandParser) -> None:
         parser.add_argument("--days", type=int, default=14, help="горизонт у днях")
         parser.add_argument(
             "--dry-run",
@@ -25,7 +25,7 @@ class Command(BaseCommand):
             help="показати список і нічого не позначати",
         )
 
-    def handle(self, *args, **options):
+    def handle(self, *args: object, **options: object) -> None:
         days = options["days"]
 
         if options["dry_run"]:

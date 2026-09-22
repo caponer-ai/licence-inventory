@@ -67,10 +67,6 @@ class Unit(TimeStamped):
     def __str__(self) -> str:
         return f"{self.ref} ({self.get_state_display()})"
 
-    @property
-    def active_issue(self) -> "Issue | None":
-        return self.issues.filter(is_active=True).first()
-
 
 class Issue(TimeStamped):
     """Факт видачі одиниці клієнту.
