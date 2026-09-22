@@ -22,8 +22,10 @@ from inventory.models import Event, ReminderLog, Unit
 from inventory.states import UnitState
 
 #: Exact numbers, not "at most". If an extra query appears, the test has to
-#: fail rather than silently let the regression through.
-EXPECTED_REMIND = 4
+#: fail rather than silently let the regression through. It did its job when
+#: queued notifications were added: the count moved from 4 to 5 and the test
+#: refused to pass until the number was looked at and updated.
+EXPECTED_REMIND = 5
 EXPECTED_REMIND_REPEAT = 2
 EXPECTED_SWEEP = 3
 

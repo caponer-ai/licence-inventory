@@ -83,13 +83,13 @@ def test_dry_run_changes_nothing(make_unit):
 
 
 @pytest.mark.django_db
-def test_command_sends_and_reports(make_unit):
+def test_command_queues_and_says_so(make_unit):
     make_unit("R-6", state=UnitState.ISSUED, expires_in_days=2)
     out = StringIO()
 
     call_command("send_renewal_reminders", "--days", "14", stdout=out)
 
-    assert "reminders sent: 1" in out.getvalue()
+    assert "reminders queued: 1" in out.getvalue()
     assert ReminderLog.objects.count() == 1
 
 

@@ -211,3 +211,59 @@ class ReminderLog(models.Model):
 
     def __str__(self) -> str:
         return f"{self.unit.ref} {self.kind} {self.for_expires_at:%Y-%m-%d}"
+
+
+class IdempotencyRecord(models.Model):
+    """A key that lets a client retry a renewal without paying twice.
+
+    The failure this exists for is ordinary, not exotic: the server renews
+    the licence, the response is lost on the way back, and the client
+    retries. A row lock orders operations, it cannot tell that two separate
+    requests mean the same thing.
+
+    The fingerprint is stored so that reusing a key with different arguments
+    is refused instead of being answered with somebody else's result.
+    """
+
+    key = models.CharField(max_length=128, unique=True)
+    fingerprint = models.CharField(max_length=255)
+    renewal = models.ForeignKey("Renewal", on_delete=models.CASCADE, related_name="idempotency")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    def __str__(self) -> str:
+        return f"{self.key} -> renewal {self.renewal_id}"
+
+
+class Notification(models.Model):
+    """A message the system intends to send, and what became of it.
+
+    Before this the reminder job wrote an event called ``reminder.sent``
+    while nothing was sent anywhere. The name was a lie, and the lie mattered
+    more than the missing feature: an audit log that claims delivery cannot
+    be used to answer "did the client know".
+
+    The intent is recorded in the same transaction as the reminder itself;
+    delivery happens afterwards and separately, because a provider call
+    inside a database transaction holds locks for the length of a network
+    round trip. Nothing is called delivered without a provider acknowledging
+    it.
+    """
+
+    class State(models.TextChoices):
+        PENDING = "pending", "pending"
+        SENT = "sent", "sent"
+        FAILED = "failed", "failed"
+
+    unit = models.ForeignKey(Unit, on_delete=models.CASCADE, related_name="notifications")
+    kind = models.CharField(max_length=32, default="renewal")
+    state = models.CharField(max_length=16, choices=State.choices, default=State.PENDING, db_index=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    last_error = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"{self.unit.ref} {self.kind} {self.state}"

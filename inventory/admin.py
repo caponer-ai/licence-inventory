@@ -41,6 +41,27 @@ class UnitAdmin(admin.ModelAdmin):
     readonly_fields = ("state", "expires_at")
     actions = ["renew_30_days"]
 
+    #: Mirrors the serializer: the only columns a plain edit may write.
+    WRITABLE = ("ref", "tier", "cost_cents", "acquired_at", "note")
+
+    def save_model(self, request: HttpRequest, obj: Unit, form: object, change: bool) -> None:
+        """Save the edited columns, not every column on the object.
+
+        `readonly_fields` removes a field from the *form*. It does nothing to
+        the save: Django's default `save_model` calls `obj.save()` with no
+        `update_fields`, so every column goes back to the database, including
+        the expiry the admin page read when it was opened.
+
+        A renewal that committed while the page was open was therefore
+        rolled back by someone editing a note, with the Renewal row and the
+        audit entry left behind to contradict the data.
+        Covered by `test_admin_edit_does_not_roll_back_a_renewal`.
+        """
+        if not change:
+            obj.save()
+            return
+        obj.save(update_fields=[*self.WRITABLE, "updated_at"])
+
     @admin.action(description="Renew for 30 days")
     def renew_30_days(self, request: HttpRequest, queryset: QuerySet) -> None:
         actor = request.user.username or "admin"

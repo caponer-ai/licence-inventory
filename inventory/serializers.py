@@ -48,7 +48,7 @@ class UnitSerializer(serializers.ModelSerializer):
     WRITABLE = ("ref", "tier", "cost_cents", "acquired_at", "note")
 
     def update(self, instance, validated_data):
-        """Write only the writable fields, and only those.
+        """Write only the writable fields, and never more than those.
 
         ``read_only_fields`` stops a value from being *accepted*, it does not
         stop it from being *written*. The default ModelSerializer.update()
@@ -60,12 +60,20 @@ class UnitSerializer(serializers.ModelSerializer):
         only edits a note overwrites a renewal that committed a moment
         earlier. The Renewal row and the audit entry survive, the actual
         expiry silently rolls back, and the history starts lying.
-        Covered by `test_patch_does_not_roll_back_a_concurrent_renewal`.
+
+        The first attempt at this fix still had the hole: it fell back to a
+        full save when nothing writable was touched, so an empty PATCH, or
+        one carrying only ignored fields, wiped the renewal exactly as
+        before. A no-op write must be a no-op.
+        Covered by `test_patch_does_not_roll_back_a_concurrent_renewal` and
+        `test_empty_patch_writes_nothing`.
         """
-        for field, value in validated_data.items():
-            setattr(instance, field, value)
         touched = [f for f in self.WRITABLE if f in validated_data]
-        instance.save(update_fields=[*touched, "updated_at"] if touched else None)
+        if not touched:
+            return instance
+        for field in touched:
+            setattr(instance, field, validated_data[field])
+        instance.save(update_fields=[*touched, "updated_at"])
         return instance
 
 

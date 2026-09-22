@@ -6,5 +6,7 @@ db.sqlite3
 .pytest_cache/
 .ruff_cache/
 .coverage
+staticfiles/*
+!staticfiles/.gitkeep
 coverage.xml
 htmlcov/

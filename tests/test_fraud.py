@@ -163,3 +163,29 @@ def test_rejection_is_visible_in_the_unit_history(api, make_unit, client_rec):
 
     actions = [row["action"] for row in api.get("/api/events/?unit_ref=REJ-1").data["results"]]
     assert "claim.rejected" in actions
+
+
+@pytest.mark.django_db
+def test_renewal_bounds_live_in_the_service(make_unit):
+    """The service is the entry point for the API, commands and the admin.
+
+    A direct call with a bad value used to become an IntegrityError or an
+    OverflowError, and both reach a client as a 500. A violated business
+    rule has to look like one wherever it is violated.
+    """
+    make_unit("BND-1", state=UnitState.ISSUED, expires_in_days=5)
+
+    with pytest.raises(services.DomainError):
+        services.renew_unit(unit_ref="BND-1", period_days=30, price_cents=-5)
+
+    with pytest.raises(services.DomainError):
+        services.renew_unit(unit_ref="BND-1", period_days=3_000_000, price_cents=0)
+
+    with pytest.raises(services.DomainError):
+        services.renew_unit(
+            unit_ref="BND-1", period_days=30, price_cents=services.MAX_CENTS + 1
+        )
+
+    from inventory.models import Renewal
+
+    assert Renewal.objects.count() == 0, "a refused call left a partial change behind"

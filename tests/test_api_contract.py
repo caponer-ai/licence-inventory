@@ -259,3 +259,45 @@ def test_reserved_refs_match_the_router(api):
     for name in list_actions:
         response = api.post("/api/units/", {"ref": name}, format="json")
         assert response.status_code == 400, f"{name} is routable but accepted as a ref"
+
+
+@pytest.mark.django_db
+def test_empty_patch_writes_nothing(api, make_unit):
+    """The hole the first fix left behind.
+
+    The first version fell back to a full save when nothing writable was
+    touched, so an empty PATCH, or one carrying only ignored fields, rolled
+    back a renewal exactly as the original bug did.
+    """
+    unit = make_unit("EP-1", state=UnitState.ISSUED, expires_in_days=10)
+
+    stale = UnitSerializer(Unit.objects.get(ref="EP-1"), data={}, partial=True)
+    stale.is_valid(raise_exception=True)
+
+    services.renew_unit(unit_ref="EP-1", period_days=365, price_cents=100)
+    renewed_to = Unit.objects.get(ref="EP-1").expires_at
+
+    stale.save()
+
+    unit.refresh_from_db()
+    assert unit.expires_at == renewed_to, "an empty update rolled the renewal back"
+
+
+@pytest.mark.django_db
+def test_patch_with_only_ignored_fields_writes_nothing(api, make_unit):
+    """A payload of read-only fields is the same no-op by another route."""
+    unit = make_unit("EP-2", state=UnitState.ISSUED, expires_in_days=10)
+
+    stale = UnitSerializer(
+        Unit.objects.get(ref="EP-2"), data={"state": "available"}, partial=True
+    )
+    stale.is_valid(raise_exception=True)
+
+    services.renew_unit(unit_ref="EP-2", period_days=365, price_cents=100)
+    renewed_to = Unit.objects.get(ref="EP-2").expires_at
+
+    stale.save()
+
+    unit.refresh_from_db()
+    assert unit.expires_at == renewed_to
+    assert unit.state == UnitState.ISSUED

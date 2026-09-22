@@ -6,7 +6,12 @@ Run from cron or a systemd timer:
 
 The command is idempotent: one reminder per expiry date, no matter how many
 times it runs. It is therefore safe to schedule hourly, and restarting cron
-after a failure never duplicates a send.
+after a failure never duplicates anything.
+
+It queues rather than sends. Deciding who needs a reminder belongs in a
+database transaction; calling a provider does not, because a network round
+trip inside a transaction holds row locks for its whole duration. Delivery
+lives in deliver_notifications.
 """
 
 from typing import Any
@@ -37,7 +42,14 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(f"dry run, found {len(units)}"))
             return
 
-        sent = services.send_renewal_reminders(days=days)
-        for unit in sent:
-            self.stdout.write(f"reminded: {unit.ref} until {unit.expires_at:%Y-%m-%d}")
-        self.stdout.write(self.style.SUCCESS(f"reminders sent: {len(sent)}"))
+        queued = services.send_renewal_reminders(days=days)
+        for unit in queued:
+            self.stdout.write(f"queued: {unit.ref} expiring {unit.expires_at:%Y-%m-%d}")
+        # Queued, not sent. This command decides who needs a reminder;
+        # deliver_notifications is what talks to a provider. Saying "sent"
+        # here was the original lie that the notification states replaced.
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"reminders queued: {len(queued)} (run deliver_notifications to send)"
+            )
+        )

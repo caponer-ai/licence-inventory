@@ -55,7 +55,12 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "inventory.logging_filters.RequestIdMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    # Without this /admin/ has no CSS under gunicorn: runserver is the only
+    # thing that serves static files by itself, and a styleless admin was
+    # the first thing anyone opening the container would see.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -118,6 +123,10 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+}
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
@@ -185,3 +194,33 @@ if IS_PRODUCTION:
     # The container healthcheck talks plain HTTP to 127.0.0.1, so it must not
     # be bounced to HTTPS. Everything else still is.
     SECURE_REDIRECT_EXEMPT = [r"^healthz/$"]
+
+# Structured logs with a request id. Without the id, two interleaved
+# requests in one log file cannot be told apart, which is precisely when
+# logs are needed. The id comes from the inbound X-Request-ID when a proxy
+# sets one, so a trace survives across services.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "filters": {"request_id": {"()": "inventory.logging_filters.RequestIdFilter"}},
+    "formatters": {
+        "structured": {
+            "format": (
+                '{"time":"%(asctime)s","level":"%(levelname)s",'
+                '"logger":"%(name)s","request_id":"%(request_id)s",'
+                '"message":"%(message)s"}'
+            )
+        }
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "filters": ["request_id"],
+            "formatter": "structured",
+        }
+    },
+    "root": {"handlers": ["console"], "level": os.environ.get("LOG_LEVEL", "INFO")},
+    "loggers": {
+        "django.request": {"handlers": ["console"], "level": "WARNING", "propagate": False}
+    },
+}

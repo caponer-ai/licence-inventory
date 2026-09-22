@@ -84,7 +84,21 @@ jobs:
         # about asserting on output you have not actually looked at.
         run: |
           pytest tests/test_concurrency.py --no-cov | tee /tmp/conc.txt
-          grep -q "3 passed" /tmp/conc.txt
+          grep -q "4 passed" /tmp/conc.txt
+      - name: Deliberately break each guard and check the suite notices
+        if: matrix.database == 'postgres'
+        env:
+          POSTGRES_DB: licence_inventory
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: 5432
+        # A green suite proves the code passes its tests. It does not prove
+        # the tests would fail if the code were wrong. This runs on the
+        # Postgres leg because the concurrency guard cannot be exercised
+        # anywhere else: on SQLite those tests skip, and a skipped test
+        # catches nothing.
+        run: python scripts/mutation_check.py
 
   docker:
     runs-on: ubuntu-latest

@@ -6,3 +6,4 @@ python-dotenv>=1.0
 # needs the driver. Without it the documented Docker path dies on startup.
 psycopg[binary]>=3.2
 gunicorn>=22.0
+whitenoise>=6.6

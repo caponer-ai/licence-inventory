@@ -17,9 +17,11 @@ actually exercised under concurrency.
 """
 
 import threading
+from datetime import timedelta
 
 import pytest
-from django.db import connection, connections, transaction
+from django.db import IntegrityError, connection, connections, transaction
+from django.utils import timezone
 
 from inventory import services
 from inventory.models import Issue, Unit
@@ -31,16 +33,28 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+#: Sentinel for "this thread never produced anything". Distinct from None so
+#: a function that legitimately returns None cannot be mistaken for a hang.
+NOTHING = object()
+
+
 def run_in_parallel(fn, args_list):
     """Call ``fn`` once per argument tuple, each on its own connection.
+
+    A barrier holds every thread until all of them are ready, so the
+    dangerous interleaving is forced rather than hoped for. Starting threads
+    one after another and trusting the scheduler is how a concurrency test
+    quietly becomes a sequential one that passes for the wrong reason.
 
     Every thread closes its connection afterwards, otherwise the test
     database keeps them open and teardown hangs.
     """
-    results: list[object] = [None] * len(args_list)
+    results: list[object] = [NOTHING] * len(args_list)
+    ready = threading.Barrier(len(args_list), timeout=20)
 
     def worker(index, args):
         try:
+            ready.wait()
             results[index] = fn(*args)
         except Exception as exc:  # noqa: BLE001 - the outcome is the assertion
             results[index] = exc
@@ -51,7 +65,10 @@ def run_in_parallel(fn, args_list):
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout=20)
+        t.join(timeout=30)
+
+    assert not any(t.is_alive() for t in threads), "a thread did not finish"
+    assert NOTHING not in results, "a thread produced no result at all"
     return results
 
 
@@ -88,6 +105,10 @@ def test_two_approvals_of_one_claim_produce_one_replacement(django_user_model):
 
     assert len(succeeded) == 1, f"both approvals went through: {results}"
     assert len(refused) == 1, f"the loser must get a domain error, got {results}"
+    # The specific error matters. "Something failed" would also be satisfied
+    # by a deadlock or a constraint violation, neither of which is the
+    # behaviour this test is about.
+    assert "already" in str(refused[0]), f"unexpected reason: {refused[0]!r}"
 
     free = Issue.objects.filter(client=client, price_cents=0).count()
     assert free == 1, "one payment must buy exactly one free replacement"
@@ -161,6 +182,38 @@ def test_two_issues_of_one_unit_produce_one_issue():
     results = run_in_parallel(issue, [(1,), (2,)])
 
     created = [r for r in results if isinstance(r, Issue)]
+    losers = [r for r in results if not isinstance(r, Issue)]
     assert len(created) == 1, f"the unit was issued twice: {results}"
+    assert len(losers) == 1
+    # Either the service refuses it or the partial index does. Anything else
+    # means the second request failed for a reason this test does not cover.
+    assert isinstance(losers[0], (services.UnitNotAvailable, IntegrityError)), (
+        f"unexpected failure mode: {losers[0]!r}"
+    )
     assert Issue.objects.filter(unit__ref="C-ONE", is_active=True).count() == 1
     assert Unit.objects.get(ref="C-ONE").state == UnitState.ISSUED
+
+
+@pytest.mark.django_db(transaction=True)
+def test_two_retries_of_one_renewal_extend_the_term_once():
+    """Idempotency has to hold when the retry arrives while the first call
+    is still running, not only after it finished."""
+    from inventory.models import Renewal
+
+    unit = Unit.objects.create(
+        ref="C-IDEM", state=UnitState.ISSUED, expires_at=timezone.now() + timedelta(days=10)
+    )
+    before = unit.expires_at
+
+    def renew(_):
+        with transaction.atomic():
+            return services.renew_unit(
+                unit_ref="C-IDEM", period_days=365, price_cents=100, idempotency_key="same"
+            )
+
+    results = run_in_parallel(renew, [(1,), (2,)])
+
+    unit.refresh_from_db()
+    renewals = Renewal.objects.filter(unit=unit).count()
+    assert renewals == 1, f"the term was extended twice: {results}"
+    assert unit.expires_at == before + timedelta(days=365)

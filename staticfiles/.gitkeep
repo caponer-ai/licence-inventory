@@ -1,0 +1,2 @@
+Kept so WhiteNoise has a STATIC_ROOT before collectstatic has ever run.
+The collected files themselves are build output and are gitignored.

@@ -14,7 +14,17 @@ from django.db import transaction
 from django.db.models import QuerySet
 from django.utils import timezone
 
-from .models import Client, Event, Issue, ReminderLog, Renewal, Unit, WarrantyClaim
+from .models import (
+    Client,
+    Event,
+    IdempotencyRecord,
+    Issue,
+    Notification,
+    ReminderLog,
+    Renewal,
+    Unit,
+    WarrantyClaim,
+)
 from .states import ClaimState, UnitState, can_move
 
 
@@ -44,6 +54,24 @@ class IssueClosed(DomainError):
 
 class ClaimAlreadyOpen(DomainError):
     pass
+
+
+class IdempotencyConflict(DomainError):
+    """The same key was reused with a different payload."""
+
+
+#: Domain bounds, enforced in the service rather than only in a serializer.
+#: The service is the entry point for the API, for management commands and
+#: for the admin, so a direct call with a bad value has to produce a business
+#: error, not an IntegrityError or an OverflowError turning into a 500.
+MAX_CENTS = 2_147_483_647
+MAX_PERIOD_DAYS = 3650
+MAX_WARRANTY_DAYS = 365
+
+
+def _check_money(value: int, name: str) -> None:
+    if not 0 <= value <= MAX_CENTS:
+        raise DomainError(f"{name} must be between 0 and {MAX_CENTS} cents")
 
 
 def log(action: str, *, actor: str, unit=None, issue=None, **payload) -> Event:
@@ -84,15 +112,9 @@ def issue_unit(
     partial unique index in the database is the second line of defence, for
     the day somebody calls the logic around this function.
     """
-    # The model has a CHECK constraint, so a negative price never reaches the
-    # table. But an IntegrityError becomes a 500, and a caller passing a bad
-    # price is a violated business rule, not an outage. The service is also
-    # reached from a management command and from the admin, where a serializer
-    # never runs.
-    if price_cents < 0:
-        raise DomainError("price cannot be negative")
-    if not 0 <= warranty_days <= 365:
-        raise DomainError("warranty must be between 0 and 365 days")
+    _check_money(price_cents, "price")
+    if not 0 <= warranty_days <= MAX_WARRANTY_DAYS:
+        raise DomainError(f"warranty must be between 0 and {MAX_WARRANTY_DAYS} days")
 
     unit = Unit.objects.select_for_update().get(ref=unit_ref)
     client = Client.objects.get(pk=client_id)
@@ -128,20 +150,48 @@ def issue_unit(
 
 
 @transaction.atomic
-def renew_unit(*, unit_ref: str, period_days: int, price_cents: int, actor: str = "system") -> Renewal:
+def renew_unit(
+    *,
+    unit_ref: str,
+    period_days: int,
+    price_cents: int,
+    actor: str = "system",
+    idempotency_key: str = "",
+) -> Renewal:
     """Extend a unit's expiry date.
+
+    ``idempotency_key`` makes a retry safe. The ordinary failure it exists
+    for has nothing to do with concurrency: the server renews the licence,
+    the response is lost on the way back, and the client retries. A row lock
+    does not help, because the second call is a legitimate separate request
+    that happens to mean the same thing. With a key, the second call returns
+    the first result instead of extending the term twice.
+
+    The same key with different arguments is a client bug and is refused
+    rather than silently answered with the old result.
 
     The extension counts from ``max(now, current expiry)``, not from ``now``.
     Otherwise a client who renews a week before the end silently loses those
     seven paid days. This is the most common mistake in this kind of logic,
     so it has a test of its own.
     """
-    if period_days < 1:
-        # The serializer catches this over HTTP, but the service is also
-        # called from a management command and from the admin. A zero-day
-        # renewal would leave a Renewal row that changed nothing, and the
-        # history would start lying about what was done to the unit.
-        raise DomainError("a renewal must be at least one day long")
+    # The serializer catches these over HTTP, but the service is also called
+    # from a management command and from the admin. Without them a direct
+    # call turned a bad value into an IntegrityError or an OverflowError,
+    # both of which reach the client as a 500 rather than a 409.
+    if not 1 <= period_days <= MAX_PERIOD_DAYS:
+        raise DomainError(f"a renewal must be between 1 and {MAX_PERIOD_DAYS} days")
+    _check_money(price_cents, "price")
+
+    fingerprint = f"{unit_ref}:{period_days}:{price_cents}"
+    if idempotency_key:
+        seen = IdempotencyRecord.objects.filter(key=idempotency_key).first()
+        if seen is not None:
+            if seen.fingerprint != fingerprint:
+                raise IdempotencyConflict(
+                    f"key {idempotency_key} was already used with different arguments"
+                )
+            return seen.renewal
 
     unit = Unit.objects.select_for_update().get(ref=unit_ref)
     if unit.state == UnitState.REVOKED:
@@ -163,6 +213,14 @@ def renew_unit(*, unit_ref: str, period_days: int, price_cents: int, actor: str 
         previous_expires_at=previous,
         new_expires_at=unit.expires_at,
     )
+    if idempotency_key:
+        # Inside the same transaction as the renewal: either both land or
+        # neither does. A key stored after a commit would be lost exactly
+        # when it is needed, on a crash between the two writes.
+        IdempotencyRecord.objects.create(
+            key=idempotency_key, fingerprint=fingerprint, renewal=renewal
+        )
+
     log(
         "unit.renewed",
         actor=actor,
@@ -394,10 +452,21 @@ def send_renewal_reminders(
     ReminderLog.objects.bulk_create(
         [ReminderLog(unit=u, kind="renewal", for_expires_at=expiries[u.id]) for u in fresh]
     )
+    # The intent is recorded here, in the same transaction as the reminder
+    # log. Delivery happens afterwards, in inventory/delivery.py, because a
+    # provider call inside a transaction holds row locks for the length of a
+    # network round trip.
+    #
+    # The event is called "queued", not "sent". The old name claimed a
+    # delivery that never happened, and an audit log that claims delivery
+    # cannot answer "did the client know".
+    Notification.objects.bulk_create(
+        [Notification(unit=u, kind="renewal") for u in fresh]
+    )
     Event.objects.bulk_create(
         [
             Event(
-                action="reminder.sent",
+                action="reminder.queued",
                 actor=actor,
                 unit=u,
                 payload={"expires_at": expiries[u.id].isoformat()},

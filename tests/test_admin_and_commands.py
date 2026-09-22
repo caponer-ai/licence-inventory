@@ -219,3 +219,34 @@ def test_long_username_does_not_break_the_operation(api, make_unit, client_rec, 
 
     assert response.status_code == 201
     assert Event.objects.filter(actor=long_name).exists()
+
+
+@pytest.mark.django_db
+def test_admin_edit_does_not_roll_back_a_renewal(unit_admin, request_with_user, make_unit):
+    """readonly_fields hides a field from the form, not from the save.
+
+    Django's default save_model calls obj.save() with no update_fields, so
+    every column goes back to the database including the expiry the admin
+    page read when it was opened. A renewal that committed while the page
+    was open was silently rolled back by someone editing a note.
+    """
+    unit = make_unit("ADM-1", state=UnitState.ISSUED, expires_in_days=10)
+
+    opened = Unit.objects.get(ref="ADM-1")  # the admin page loaded the object
+    services.renew_unit(unit_ref="ADM-1", period_days=365, price_cents=100)
+    renewed_to = Unit.objects.get(ref="ADM-1").expires_at
+
+    opened.note = "edited in the admin"
+    unit_admin.save_model(request_with_user, opened, form=None, change=True)
+
+    unit.refresh_from_db()
+    assert unit.expires_at == renewed_to, "the admin rolled the renewal back"
+    assert unit.note == "edited in the admin"
+
+
+@pytest.mark.django_db
+def test_admin_create_still_writes_everything(unit_admin, request_with_user):
+    """The guard is for edits. Creating an object has nothing to protect."""
+    fresh = Unit(ref="ADM-2", note="new")
+    unit_admin.save_model(request_with_user, fresh, form=None, change=False)
+    assert Unit.objects.filter(ref="ADM-2").exists()
