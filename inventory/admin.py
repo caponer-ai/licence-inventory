@@ -1,5 +1,6 @@
-from django.contrib import admin
+from django.contrib import admin, messages
 
+from . import services
 from .models import Client, Event, Issue, ReminderLog, Renewal, Unit, WarrantyClaim
 
 
@@ -8,8 +9,25 @@ class UnitAdmin(admin.ModelAdmin):
     list_display = ("ref", "tier", "state", "expires_at", "cost_cents")
     list_filter = ("state", "tier")
     search_fields = ("ref", "note")
-    # Стан міняється тільки через сервіс, щоб не було шляху повз журнал.
-    readonly_fields = ("state",)
+    # Стан і строк дії міняються тільки через сервіс: інакше адмінка
+    # лишається дірою в тому самому інваріанті, який закритий в API.
+    # Продовжити строк можна дією нижче, вона пише в Renewal і в журнал.
+    readonly_fields = ("state", "expires_at")
+    actions = ["renew_30_days"]
+
+    @admin.action(description="Продовити на 30 днів")
+    def renew_30_days(self, request, queryset):
+        actor = request.user.username or "admin"
+        done = 0
+        for unit in queryset:
+            try:
+                services.renew_unit(
+                    unit_ref=unit.ref, period_days=30, price_cents=0, actor=actor
+                )
+                done += 1
+            except services.DomainError as exc:
+                self.message_user(request, f"{unit.ref}: {exc}", level=messages.WARNING)
+        self.message_user(request, f"продовжено: {done}")
 
 
 @admin.register(Client)

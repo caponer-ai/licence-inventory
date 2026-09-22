@@ -1,7 +1,9 @@
 from datetime import timedelta
 
 import pytest
+from django.contrib.auth.models import User
 from django.utils import timezone
+from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from inventory.models import Client, Unit
@@ -9,7 +11,38 @@ from inventory.states import UnitState
 
 
 @pytest.fixture
-def api():
+def user(db):
+    return User.objects.create_user(username="olha", password="x")
+
+
+@pytest.fixture
+def staff(db):
+    return User.objects.create_user(username="admin-kate", password="x", is_staff=True)
+
+
+@pytest.fixture
+def api(user):
+    """Автентифікований клієнт: звичайний робочий випадок.
+
+    Токен, а не force_login, щоб тести йшли тим самим шляхом, що й
+    зовнішній клієнт: заголовок Authorization.
+    """
+    client = APIClient()
+    token, _ = Token.objects.get_or_create(user=user)
+    client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+    return client
+
+
+@pytest.fixture
+def api_staff(staff):
+    client = APIClient()
+    token, _ = Token.objects.get_or_create(user=staff)
+    client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+    return client
+
+
+@pytest.fixture
+def api_anon():
     return APIClient()
 
 

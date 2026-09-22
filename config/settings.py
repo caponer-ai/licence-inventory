@@ -42,6 +42,8 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "rest_framework.authtoken",
+    "drf_spectacular",
     "inventory",
 ]
 
@@ -117,6 +119,39 @@ REST_FRAMEWORK = {
     "PAGE_SIZE": 50,
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
     "EXCEPTION_HANDLER": "inventory.exceptions.exception_handler",
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    # Закрито за замовчуванням. Відкриті точки (healthz, схема) вмикають
+    # доступ явно, а не навпаки: забути закрити легше, ніж забути відкрити.
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.TokenAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.environ.get("THROTTLE_ANON", "20/min"),
+        "user": os.environ.get("THROTTLE_USER", "600/min"),
+        # Логін жорсткіший за все інше: це єдине місце, де перевіряється
+        # пароль, і єдине, куди можна стукати без токена.
+        "login": os.environ.get("THROTTLE_LOGIN", "5/min"),
+    },
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "licence-inventory API",
+    "DESCRIPTION": "Облік одиниць з обмеженим строком дії: видача, продовження, гарантія.",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    # Локально документація відкрита, щоб її було видно одразу після
+    # клонування. На проді схема це карта твого API, тому за токеном.
+    "SERVE_PERMISSIONS": (
+        ["rest_framework.permissions.IsAuthenticated"]
+        if IS_PRODUCTION
+        else ["rest_framework.permissions.AllowAny"]
+    ),
 }
 
 # Жорсткі налаштування ввімкнені рівно на проді.

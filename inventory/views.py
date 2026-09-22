@@ -6,12 +6,15 @@
 """
 
 from django.db import connection
+from drf_spectacular.utils import extend_schema
 from rest_framework import mixins, status, viewsets
-from rest_framework.decorators import action, api_view
+from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from . import services
 from .models import Client, Event, Issue, Unit, WarrantyClaim
+from .permissions import IsAdminForDestroy
 from .serializers import (
     ClaimApproveSerializer,
     ClaimCreateSerializer,
@@ -31,8 +34,11 @@ def actor_of(request) -> str:
 
 
 class ClientViewSet(viewsets.ModelViewSet):
+    """Клієнти. Тут лежать контакти, тому доступ лише за токеном."""
+
     queryset = Client.objects.all()
     serializer_class = ClientSerializer
+    permission_classes = [IsAdminForDestroy]
 
 
 class UnitViewSet(viewsets.ModelViewSet):
@@ -47,6 +53,7 @@ class UnitViewSet(viewsets.ModelViewSet):
     queryset = Unit.objects.all()
     serializer_class = UnitSerializer
     lookup_field = "ref"
+    permission_classes = [IsAdminForDestroy]
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -152,13 +159,23 @@ class EventViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         return qs.filter(unit__ref=unit_ref) if unit_ref else qs
 
 
+@extend_schema(
+    summary="Пульс сервісу",
+    description="Перевіряє доступність бази. 503, якщо запит до неї не пройшов.",
+    responses={200: None, 503: None},
+)
 @api_view(["GET"])
+@permission_classes([AllowAny])
+@throttle_classes([])
 def healthz(request):
     """Пульс, який справді щось перевіряє.
 
     Ендпоінт, що завжди відповідає «ok», марний: балансувальник вважає
     інстанс живим, коли база вже недоступна. Тому робимо найдешевший
     можливий запит і віддаємо 503, якщо він не пройшов.
+
+    Відкритий і без обмеження частоти свідомо: балансувальник не має
+    токена і стукає сюди щосекунди. Даних звідси не витікає.
     """
     try:
         with connection.cursor() as cursor:

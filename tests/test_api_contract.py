@@ -16,7 +16,7 @@ from inventory.states import UnitState
 
 
 @pytest.mark.django_db
-def test_delete_unit_with_history_returns_409_not_500(api, make_unit, client_rec):
+def test_delete_unit_with_history_returns_409_not_500(api_staff, make_unit, client_rec):
     """Найгірший дефект першого раунду: ProtectedError летів назовні.
 
     `on_delete=PROTECT` кидає `ProtectedError`, DRF його не знає, тому
@@ -25,7 +25,7 @@ def test_delete_unit_with_history_returns_409_not_500(api, make_unit, client_rec
     make_unit("D-1")
     services.issue_unit(unit_ref="D-1", client_id=client_rec.id, price_cents=100)
 
-    response = api.delete("/api/units/D-1/")
+    response = api_staff.delete("/api/units/D-1/")
 
     assert response.status_code == 409
     assert response.data["code"] == "ProtectedError"
@@ -33,20 +33,20 @@ def test_delete_unit_with_history_returns_409_not_500(api, make_unit, client_rec
 
 
 @pytest.mark.django_db
-def test_delete_client_with_history_returns_409(api, make_unit, client_rec):
+def test_delete_client_with_history_returns_409(api_staff, make_unit, client_rec):
     make_unit("D-2")
     services.issue_unit(unit_ref="D-2", client_id=client_rec.id, price_cents=100)
 
-    response = api.delete(f"/api/clients/{client_rec.id}/")
+    response = api_staff.delete(f"/api/clients/{client_rec.id}/")
 
     assert response.status_code == 409
 
 
 @pytest.mark.django_db
-def test_unit_without_history_can_be_deleted(api, make_unit):
+def test_unit_without_history_can_be_deleted(api_staff, make_unit):
     """Захист не має заважати нормальному випадку."""
     make_unit("D-3")
-    assert api.delete("/api/units/D-3/").status_code == 204
+    assert api_staff.delete("/api/units/D-3/").status_code == 204
 
 
 @pytest.mark.django_db
