@@ -87,3 +87,22 @@ def test_seed_demo_refuses_to_run_in_production():
     )
     assert result.returncode != 0
     assert "production" in (result.stdout + result.stderr).lower()
+
+
+def test_ci_workflow_is_valid_yaml():
+    """A broken workflow file cannot be caught by the workflow itself.
+
+    It simply never runs: GitHub reports a failure that lasted 0 seconds and
+    no job logs exist. That is exactly what happened on the first push, over
+    a quoted colon inside a grep pattern. This test is the only place that
+    catches it before the push.
+    """
+    import yaml
+
+    path = BASE_DIR / ".github" / "workflows" / "ci.yml"
+    spec = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    assert set(spec["jobs"]) == {"lint", "test", "docker"}
+    for name, job in spec["jobs"].items():
+        assert job.get("steps"), f"{name} has no steps"
+        assert job.get("runs-on"), f"{name} has no runner"

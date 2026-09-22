@@ -6,3 +6,4 @@ pytest-cov>=5.0
 mypy>=1.11
 django-stubs[compatible-mypy]>=5.0
 djangorestframework-stubs>=3.15
+PyYAML>=6.0

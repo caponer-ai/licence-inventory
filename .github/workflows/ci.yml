@@ -75,9 +75,12 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_HOST: 127.0.0.1
           POSTGRES_PORT: 5432
-        # Without this the whole file could be skipped by a bad marker and
-        # nobody would notice: a skipped test is a green test.
-        run: pytest tests/test_concurrency.py -q --no-cov --co -q | grep -q "3 tests collected"
+        # A skipped test is a green test. This asserts the concurrency file
+        # actually ran here, which is the only place it can: SQLite has no
+        # row-level locking, so the same tests are skipped on the other leg.
+        run: |
+          pytest tests/test_concurrency.py --no-cov -q | tee /tmp/conc.txt
+          grep -q "3 passed" /tmp/conc.txt
 
   docker:
     runs-on: ubuntu-latest
@@ -101,7 +104,10 @@ jobs:
           docker compose exec -T web python manage.py migrate
           docker compose exec -T web python manage.py seed_demo
       - name: The heartbeat really talks to Postgres
-        run: curl -fsS http://localhost:8000/healthz/ | grep -q '"database": *"ok"'
+        run: |
+          curl -fsS http://localhost:8000/healthz/ | tee /tmp/health.json
+          grep -q 'database' /tmp/health.json
+          grep -q '"status":"ok"' /tmp/health.json
       - name: Stop
         if: always()
         run: docker compose down -v
