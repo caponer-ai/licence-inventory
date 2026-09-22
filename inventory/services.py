@@ -230,7 +230,6 @@ def expiring_units(days: int):
             expires_at__isnull=False,
             expires_at__lte=now + timedelta(days=days),
         )
-        .select_related()
         .order_by("expires_at")
     )
 

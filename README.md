@@ -87,6 +87,13 @@ management-команди і з адмінки однаково, і вона н�
 з ключем із публічного репозиторію. На проді `manage.py check --deploy`
 чистий: нуль попереджень, а не «шість, ми знаємо». Локально ж ніяких
 секретів не треба, інакше обіцянка «запустити за хвилину» була б неправдою.
+Перевірити самому можна так (без `DJANGO_ENV=production` жорсткі налаштування вимкнені,
+тому локально попередження будуть, і це очікувано):
+
+```bash
+DJANGO_ENV=production DJANGO_SECRET_KEY=$(python -c "import secrets;print(secrets.token_urlsafe(50))") \n  python manage.py check --deploy --fail-level WARNING
+```
+
 Всі три сценарії в `tests/test_settings.py`. Там же важлива дрібниця:
 `check --deploy` віддає нуль навіть із шістьма попередженнями, тому без
 `--fail-level WARNING` такий тест був би декорацією.
