@@ -96,3 +96,20 @@ def test_first_renewal_of_unit_without_expiry(make_unit):
 
     expires_at = Unit.objects.get(ref="U-FRESH").expires_at
     assert before + timedelta(days=365) <= expires_at <= after + timedelta(days=365)
+
+
+@pytest.mark.django_db
+def test_zero_day_renewal_is_refused(make_unit):
+    """Порожнє продовження засмічувало б історію записом ні про що.
+
+    Серіалізатор ловить це на HTTP, але сервіс кличуть ще з
+    management-команди і з адмінки, тому правило живе в сервісі.
+    """
+    make_unit("U-ZERO", state=UnitState.ISSUED, expires_in_days=5)
+
+    with pytest.raises(services.DomainError):
+        services.renew_unit(unit_ref="U-ZERO", period_days=0, price_cents=0)
+
+    from inventory.models import Renewal
+
+    assert Renewal.objects.count() == 0
