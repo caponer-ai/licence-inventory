@@ -5,15 +5,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Залежності окремим шаром: код міняється щодня, requirements рідко,
-# тому кеш шару переживає більшість збірок.
+# Dependencies in their own layer: the code changes daily, requirements
+# rarely, so the layer cache survives most builds.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Не root: якщо процес усередині контейнера скомпрометують, він не
-# отримає права на образ і змонтовані томи.
+# Not root: if the process inside the container is compromised, it does not
+# get write access to the image or to mounted volumes.
 RUN useradd --create-home app && chown -R app:app /app
 USER app
 

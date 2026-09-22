@@ -1,9 +1,9 @@
-"""Доступ, права і журнал, який справді називає людину.
+"""Access, permissions, and an audit log that names a person.
 
-Другий раунд критики почався з простої претензії: README обіцяв «жодної
-зміни стану повз журнал», але в кожному записі стояв actor `anonymous`.
-Журнал, який не вміє відповісти «хто», відповідає лише «щось сталось».
-Тести нижче фіксують, що це виправлено, а не просто задекларовано.
+The security round started from a simple complaint: the README promised
+"no state change without a trace", yet every entry carried the actor
+`anonymous`. A log that cannot answer "who" only answers "something
+happened". The tests below pin that this is fixed rather than declared.
 """
 
 import pytest
@@ -15,7 +15,7 @@ from inventory.models import Event
 
 @pytest.mark.django_db
 def test_anonymous_cannot_read_client_contacts(api_anon, client_rec):
-    """Найнеприємніше з другого раунду: контакти віддавались без токена."""
+    """The nastiest finding of the round: contacts were served without a token."""
     response = api_anon.get("/api/clients/")
     assert response.status_code == 401
 
@@ -37,7 +37,9 @@ def test_token_obtained_by_password_works(api_anon, user):
     user.save()
 
     granted = api_anon.post(
-        "/api/auth/token/", {"username": user.username, "password": "secret-pass-123"}, format="json"
+        "/api/auth/token/",
+        {"username": user.username, "password": "secret-pass-123"},
+        format="json",
     )
     assert granted.status_code == 200
     token = granted.data["token"]
@@ -48,9 +50,10 @@ def test_token_obtained_by_password_works(api_anon, user):
 
 @pytest.mark.django_db
 def test_audit_log_records_the_real_username(api, make_unit, client_rec, user):
-    """Ось заради чого вся автентифікація.
+    """This is what the whole authentication layer is for.
 
-    До цього тут стояло б `anonymous` і журнал не мав би сенсу.
+    Before it, this assertion would read `anonymous` and the log would be
+    pointless.
     """
     make_unit("AUTH-2")
     api.post(
@@ -65,7 +68,7 @@ def test_audit_log_records_the_real_username(api, make_unit, client_rec, user):
 
 @pytest.mark.django_db
 def test_ordinary_user_cannot_delete(api, make_unit):
-    """Видалення це єдина дія, яку не рятує історія, тому лише персонал."""
+    """Deletion is the one action history does not save, hence staff only."""
     make_unit("AUTH-3")
     assert api.delete("/api/units/AUTH-3/").status_code == 403
 
@@ -85,7 +88,7 @@ def test_ordinary_user_can_still_work(api, make_unit, client_rec):
 
 @pytest.mark.django_db
 def test_healthz_stays_open_for_the_load_balancer(api_anon):
-    """Балансувальник не має токена. Даних звідси не витікає."""
+    """The load balancer has no token, and no data leaks from here."""
     assert api_anon.get("/healthz/").status_code == 200
 
 
@@ -95,40 +98,40 @@ def test_event_log_is_read_only_over_http(api, make_unit, client_rec):
     services.issue_unit(unit_ref="AUTH-5", client_id=client_rec.id, price_cents=100)
 
     assert api.get("/api/events/").status_code == 200
-    assert api.post("/api/events/", {"action": "підробка"}, format="json").status_code == 405
+    assert api.post("/api/events/", {"action": "forged"}, format="json").status_code == 405
 
 
 @pytest.mark.django_db
 def test_login_is_rate_limited(api_anon, user):
-    """Перебір пароля має коштувати часу.
+    """Guessing a password has to cost time.
 
-    Готова `ObtainAuthToken` у DRF оголошена з `throttle_classes = ()`,
-    тобто лічильник на ній вимкнено. Для єдиного ендпоінта, де
-    перевіряється пароль, це найгірше місце для «без обмежень», тому
-    тут своя в'юха з окремим scope.
+    DRF's ready-made `ObtainAuthToken` is declared with
+    `throttle_classes = ()`, so its counter is off. For the one endpoint
+    that checks a password, that is the worst possible place for "no
+    limit", hence a custom view with its own scope.
 
-    Порядок перевірок у DRF: автентифікація, права, throttle. Через це
-    анонім на закритому ендпоінті отримує 401 ще до лічильника, і
-    перевіряти обмеження треба саме на відкритому логіні.
+    Order of checks in DRF: authentication, permissions, throttle. Because
+    of that an anonymous request to a closed endpoint gets a 401 before the
+    counter ever runs, so the limit has to be exercised on the open login.
     """
     LoginThrottle.cache.clear()
     codes = []
     for _ in range(8):
         response = api_anon.post(
             "/api/auth/token/",
-            {"username": user.username, "password": "невірний"},
+            {"username": user.username, "password": "wrong"},
             format="json",
         )
         codes.append(response.status_code)
     LoginThrottle.cache.clear()
 
-    assert 429 in codes, f"перебір не обмежується, коди: {codes}"
-    assert codes[0] == 400, "перша невдала спроба має бути звичайною відмовою"
+    assert 429 in codes, f"brute force is not limited, codes: {codes}"
+    assert codes[0] == 400, "the first failed attempt should be an ordinary refusal"
 
 
 @pytest.mark.django_db
 def test_login_limit_does_not_block_normal_api_use(api, make_unit):
-    """Жорсткий ліміт на логін не має чіпати робочі запити з токеном."""
+    """A strict login limit must not touch authenticated working requests."""
     LoginThrottle.cache.clear()
     make_unit("THR-1")
     codes = {api.get("/api/units/").status_code for _ in range(20)}
@@ -137,8 +140,8 @@ def test_login_limit_does_not_block_normal_api_use(api, make_unit):
 
 @pytest.mark.django_db
 def test_openapi_schema_is_served(api):
-    """Вакансія просить REST API для сайту і мобільних. Схема це те,
-    чим вони користуються, тому вона має бути не в README, а за адресою."""
+    """A REST API for a site and mobile apps is consumed through its schema,
+    so the schema has to live at a URL, not in the README."""
     response = api.get("/api/schema/")
     assert response.status_code == 200
     assert b"licence-inventory" in response.content

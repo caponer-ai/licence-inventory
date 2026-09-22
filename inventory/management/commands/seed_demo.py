@@ -1,9 +1,11 @@
-"""Демо-дані, щоб проєкт можна було подивитись за хвилину.
+"""Demo data, so the project can be looked at within a minute.
 
-python manage.py migrate
-python manage.py seed_demo
-python manage.py send_renewal_reminders --days 14 --dry-run
-python manage.py runserver
+    python manage.py migrate
+    python manage.py seed_demo
+    python manage.py runserver
+
+Also creates a `demo` user and prints its token, so the first request to
+the API does not hit a 401.
 """
 
 from datetime import timedelta
@@ -20,25 +22,23 @@ from inventory.states import Tier, UnitState
 
 
 class Command(BaseCommand):
-    help = "Заповнити базу демонстраційними даними"
+    help = "Fill the database with demonstration data"
 
     @transaction.atomic
     def handle(self, *args: object, **options: object) -> None:
         if Unit.objects.exists():
-            self.stdout.write(self.style.WARNING("база не порожня, демо не заливаю"))
+            self.stdout.write(self.style.WARNING("database is not empty, skipping demo data"))
             return
 
-        # Без користувача і токена README обіцяв би запуск за хвилину,
-        # а перший же curl повертав би 401.
-        demo, created = User.objects.get_or_create(
-            username="demo", defaults={"is_staff": True}
-        )
+        # Without a user and a token the README would promise a one-minute
+        # start while the very first curl returned 401.
+        demo, created = User.objects.get_or_create(username="demo", defaults={"is_staff": True})
         if created:
             demo.set_password("demo")
             demo.save()
         token, _ = Token.objects.get_or_create(user=demo)
 
-        acme = Client.objects.create(name="ТОВ Акме", contact="@acme")
+        acme = Client.objects.create(name="Acme Ltd", contact="@acme")
         beta = Client.objects.create(name="Beta Studio", contact="beta@example.com")
 
         now = timezone.now()
@@ -50,25 +50,17 @@ class Command(BaseCommand):
                 acquired_at=now - timedelta(days=30 * i),
             )
 
-        # Видана давно, строк спливає за 5 днів: потрапить у нагадування.
-        issue = services.issue_unit(
-            unit_ref="UNIT-001", client_id=acme.id, price_cents=35000, actor="demo"
-        )
+        # Issued a while ago, expires in five days: will show up in reminders.
+        issue = services.issue_unit(unit_ref="UNIT-001", client_id=acme.id, price_cents=35000, actor="demo")
         issue.unit.expires_at = now + timedelta(days=5)
         issue.unit.save(update_fields=["expires_at"])
 
-        # Видана вчора: гарантія ще відкрита, є рекламація.
-        second = services.issue_unit(
-            unit_ref="UNIT-002", client_id=beta.id, price_cents=65000, actor="demo"
-        )
-        services.open_claim(
-            issue_id=second.id, reason="перестав відповідати", actor="demo"
-        )
+        # Issued yesterday: warranty still open, and there is a claim on it.
+        second = services.issue_unit(unit_ref="UNIT-002", client_id=beta.id, price_cents=65000, actor="demo")
+        services.open_claim(issue_id=second.id, reason="stopped responding", actor="demo")
 
-        # Прострочена: побачимо, як її підмітає sweep_expired.
-        third = services.issue_unit(
-            unit_ref="UNIT-003", client_id=acme.id, price_cents=35000, actor="demo"
-        )
+        # Already past its term: shows what sweep_expired does.
+        third = services.issue_unit(unit_ref="UNIT-003", client_id=acme.id, price_cents=35000, actor="demo")
         third.unit.expires_at = now - timedelta(days=2)
         third.unit.save(update_fields=["expires_at"])
 
@@ -76,14 +68,12 @@ class Command(BaseCommand):
 
         self.stdout.write(
             self.style.SUCCESS(
-                f"клієнтів 2, одиниць {Unit.objects.count()}, "
-                f"видач 3, прострочених підмічено {moved}, "
-                f"вільних {Unit.objects.filter(state=UnitState.AVAILABLE).count()}"
+                f"clients 2, units {Unit.objects.count()}, "
+                f"issues 3, expired swept {moved}, "
+                f"available {Unit.objects.filter(state=UnitState.AVAILABLE).count()}"
             )
         )
         self.stdout.write("")
-        self.stdout.write(f"користувач demo / demo, токен: {token.key}")
-        self.stdout.write("спробувати одразу:")
-        self.stdout.write(
-            f'  curl -H "Authorization: Token {token.key}" http://localhost:8000/api/units/'
-        )
+        self.stdout.write(f"user demo / demo, token: {token.key}")
+        self.stdout.write("try it right away:")
+        self.stdout.write(f'  curl -H "Authorization: Token {token.key}" http://localhost:8000/api/units/')

@@ -1,11 +1,11 @@
-"""Шляхи, якими клієнт отримує більше, ніж оплатив.
+"""Routes by which a client gets more than they paid for.
 
-П'ятий раунд критики. Усі попередні 76 тестів були зелені, коли
-знайшлось це: одна оплачена видача давала дві безкоштовні заміни.
+All 76 previous tests were green when this was found: one paid issue
+produced two free replacements.
 
-Такі дірки не видно з покриття рядків, бо кожен рядок окремо працює
-правильно. Видно їх лише тоді, коли пройти сценарій цілком і подивитись
-на підсумок у грошах.
+Holes like this are invisible in line coverage, because every line on its
+own behaves correctly. They only show up when a scenario is walked end to
+end and the result is read in money.
 """
 
 from datetime import timedelta
@@ -21,74 +21,74 @@ from inventory.states import ClaimState, UnitState
 
 @pytest.mark.django_db
 def test_closed_issue_cannot_be_claimed_again(make_unit, client_rec):
-    """Головна знахідка раунду.
+    """The main find of the round.
 
-    Сценарій: видача, рекламація, схвалення. Стара одиниця стає REVOKED,
-    видача закривається, клієнт отримує заміну. Далі, поки гарантійне
-    вікно ще відкрите, по ТІЙ САМІЙ старій видачі відкривається друга
-    рекламація. Перехід REVOKED -> REVOKED це no-op і мовчки проходить,
-    тому сервіс видавав другу безкоштовну заміну.
+    Scenario: issue, claim, approve. The old unit becomes REVOKED, the
+    issue is closed, the client gets a replacement. Then, while the
+    warranty window is still open, a second claim is filed against the SAME
+    old issue. Moving REVOKED to REVOKED is a no-op and passes silently, so
+    the service handed out another free replacement.
 
-    Підсумок у грошах був: одна оплачена видача, дві безкоштовні одиниці.
+    In money the outcome was: one paid issue, two free units.
     """
     make_unit("F-ORIG")
     make_unit("F-R1")
     make_unit("F-R2")
     issue = services.issue_unit(unit_ref="F-ORIG", client_id=client_rec.id, price_cents=35000)
 
-    first = services.open_claim(issue_id=issue.id, reason="перша")
+    first = services.open_claim(issue_id=issue.id, reason="first")
     services.approve_claim(claim_id=first.id, replacement_ref="F-R1")
 
     with pytest.raises(services.IssueClosed):
-        services.open_claim(issue_id=issue.id, reason="друга по тій самій видачі")
+        services.open_claim(issue_id=issue.id, reason="second on the same issue")
 
     free = Issue.objects.filter(client=client_rec, price_cents=0).count()
-    assert free == 1, "безкоштовна заміна має бути рівно одна на одну оплату"
+    assert free == 1, "exactly one free replacement per payment"
     assert Unit.objects.get(ref="F-R2").state == UnitState.AVAILABLE
 
 
 @pytest.mark.django_db
 def test_second_open_claim_is_refused(make_unit, client_rec):
-    """Та сама діра, коротший шлях: дві заявки до першого схвалення."""
+    """The same hole by a shorter route: two claims before the first approval."""
     make_unit("F-2")
     issue = services.issue_unit(unit_ref="F-2", client_id=client_rec.id, price_cents=100)
-    services.open_claim(issue_id=issue.id, reason="перша")
+    services.open_claim(issue_id=issue.id, reason="first")
 
     with pytest.raises(services.ClaimAlreadyOpen):
-        services.open_claim(issue_id=issue.id, reason="друга")
+        services.open_claim(issue_id=issue.id, reason="second")
 
 
 @pytest.mark.django_db
 def test_database_refuses_second_open_claim_past_the_service(make_unit, client_rec):
-    """Друга лінія, як і для видач: перевірка живе ще й у БД."""
+    """Second line, as with issues: the rule also lives in the database."""
     make_unit("F-3")
     issue = services.issue_unit(unit_ref="F-3", client_id=client_rec.id, price_cents=100)
-    WarrantyClaim.objects.create(issue=issue, reason="перша")
+    WarrantyClaim.objects.create(issue=issue, reason="first")
 
     with pytest.raises(IntegrityError), transaction.atomic():
-        WarrantyClaim.objects.create(issue=issue, reason="друга повз сервіс")
+        WarrantyClaim.objects.create(issue=issue, reason="second, bypassing the service")
 
 
 @pytest.mark.django_db
 def test_rejected_claim_allows_a_new_one(make_unit, client_rec):
-    """Обмеження не має замикати клієнта назавжди після відмови."""
+    """The guard must not lock the client out forever after one refusal."""
     make_unit("F-4")
     issue = services.issue_unit(unit_ref="F-4", client_id=client_rec.id, price_cents=100)
-    first = services.open_claim(issue_id=issue.id, reason="перша")
+    first = services.open_claim(issue_id=issue.id, reason="first")
     services.reject_claim(claim_id=first.id)
 
-    second = services.open_claim(issue_id=issue.id, reason="нові обставини")
+    second = services.open_claim(issue_id=issue.id, reason="new circumstances")
 
     assert second.state == ClaimState.OPEN
 
 
 @pytest.mark.django_db
 def test_expired_unit_cannot_be_sold(make_unit, client_rec):
-    """Стан AVAILABLE каже «нікому не видана», а не «працює».
+    """AVAILABLE means "not issued to anyone", not "works".
 
-    Одиницю можна продовжити, поки вона вільна, потім вона полежить і
-    протухне. Стан лишиться AVAILABLE. Без окремої перевірки клієнт
-    платить і отримує мертву ліцензію.
+    A unit can be renewed while free, then sit around and go stale. Its
+    state stays AVAILABLE. Without a separate check the client pays and
+    receives a dead licence.
     """
     Unit.objects.create(
         ref="F-DEAD", state=UnitState.AVAILABLE, expires_at=timezone.now() - timedelta(days=10)
@@ -101,7 +101,7 @@ def test_expired_unit_cannot_be_sold(make_unit, client_rec):
 
 
 @pytest.mark.django_db
-def test_unit_with_future_expiry_sells_normally(make_unit, client_rec):
+def test_unit_with_future_expiry_sells_normally(client_rec):
     Unit.objects.create(ref="F-OK", state=UnitState.AVAILABLE, expires_at=timezone.now() + timedelta(days=30))
     issue = services.issue_unit(unit_ref="F-OK", client_id=client_rec.id, price_cents=100)
     assert issue.unit.state == UnitState.ISSUED
@@ -109,7 +109,7 @@ def test_unit_with_future_expiry_sells_normally(make_unit, client_rec):
 
 @pytest.mark.django_db
 def test_unit_without_expiry_sells_normally(make_unit, client_rec):
-    """Строк не заданий означає «безстрокова», а не «протухла»."""
+    """No expiry set means perpetual, not stale."""
     make_unit("F-NOEXP")
     issue = services.issue_unit(unit_ref="F-NOEXP", client_id=client_rec.id, price_cents=100)
     assert issue.unit.state == UnitState.ISSUED
@@ -117,10 +117,10 @@ def test_unit_without_expiry_sells_normally(make_unit, client_rec):
 
 @pytest.mark.django_db
 def test_non_numeric_id_returns_404_not_500(api):
-    """DRF пропускає в pk будь-що без слеша і крапки.
+    """DRF lets anything without a slash or a dot through as pk.
 
-    `int("abc")` кидав ValueError, обробник його не знав, і клієнт
-    отримував 500 замість 404.
+    `int("abc")` raised ValueError, the handler did not know it, and the
+    client got a 500 instead of a 404.
     """
     assert api.post("/api/issues/abc/claim/", {"reason": "x"}, format="json").status_code == 404
     assert api.post("/api/claims/abc/approve/", {"replacement_ref": "z"}, format="json").status_code == 404

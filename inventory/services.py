@@ -1,11 +1,11 @@
-"""Бізнес-логіка інвентаря.
+"""Inventory business logic.
 
-В'юхи навмисно тонкі: вони перекладають HTTP у виклик функції звідси і
-назад. Уся логіка тут, тому її можна покрити тестами без HTTP, викликати
-з management-команди і з адмінки однаково.
+Views are deliberately thin: they translate HTTP into a call down here and
+back. All the logic lives here, so it can be tested without HTTP and called
+the same way from a management command, from the admin, or from a view.
 
-Кожна функція, що змінює стан, робить це в одній транзакції і пише подію
-в журнал. Немає шляху змінити стан повз журнал.
+Every function that changes state does so inside one transaction and writes
+an event to the audit log. There is no path that changes state silently.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from .states import ClaimState, UnitState, can_move
 
 
 class DomainError(Exception):
-    """Порушення бізнес-правила. Очікуване, не баг."""
+    """A business rule was violated. Expected, not a bug."""
 
 
 class IllegalTransition(DomainError):
@@ -49,17 +49,15 @@ class ClaimAlreadyOpen(DomainError):
 
 
 def log(action: str, *, actor: str, unit=None, issue=None, **payload) -> Event:
-    return Event.objects.create(
-        action=action, actor=actor, unit=unit, issue=issue, payload=payload
-    )
+    return Event.objects.create(action=action, actor=actor, unit=unit, issue=issue, payload=payload)
 
 
 def move_state(unit: Unit, target: str, *, actor: str, reason: str = "") -> Unit:
-    """Єдина точка зміни стану одиниці."""
+    """The single place where a unit changes state."""
     if unit.state == target:
         return unit
     if not can_move(unit.state, target):
-        raise IllegalTransition(f"{unit.state} -> {target} заборонений")
+        raise IllegalTransition(f"{unit.state} -> {target} is not allowed")
     previous = unit.state
     unit.state = target
     unit.save(update_fields=["state", "updated_at"])
@@ -81,28 +79,26 @@ def issue_unit(
     warranty_days: int = 7,
     actor: str = "system",
 ) -> Issue:
-    """Видати одиницю клієнту.
+    """Issue a unit to a client.
 
-    ``select_for_update`` тримає рядок до кінця транзакції: два одночасні
-    запити на одну одиницю не зможуть обидва побачити її вільною. Частковий
-    унікальний індекс у БД це друга лінія на випадок, якщо хтось колись
-    викличе логіку повз цю функцію.
+    ``select_for_update`` holds the row until the transaction ends, so two
+    concurrent requests for the same unit cannot both see it as free. The
+    partial unique index in the database is the second line of defence, for
+    the day somebody calls the logic around this function.
     """
     unit = Unit.objects.select_for_update().get(ref=unit_ref)
     client = Client.objects.get(pk=client_id)
 
     if unit.state not in (UnitState.AVAILABLE, UnitState.RESERVED):
-        raise UnitNotAvailable(f"одиниця {unit_ref} у стані {unit.state}")
+        raise UnitNotAvailable(f"unit {unit_ref} is in state {unit.state}")
 
     now = timezone.now()
-    # Вільна одиниця з простроченим строком це мертвий товар. Стан
-    # AVAILABLE каже лише «нікому не видана», він нічого не каже про те,
-    # чи вона ще працює. Без цієї перевірки клієнт платить і отримує
-    # ліцензію, яка вже не діє.
+    # A free unit past its expiry date is dead stock. The AVAILABLE state
+    # only says "not issued to anyone"; it says nothing about whether the
+    # unit still works. Without this check the client pays and receives a
+    # licence that already stopped working.
     if unit.expires_at and unit.expires_at <= now:
-        raise UnitExpired(
-            f"строк одиниці {unit_ref} вийшов {unit.expires_at:%Y-%m-%d}, спершу продовжіть"
-        )
+        raise UnitExpired(f"unit {unit_ref} expired on {unit.expires_at:%Y-%m-%d}, renew it first")
     issue = Issue.objects.create(
         unit=unit,
         client=client,
@@ -111,7 +107,7 @@ def issue_unit(
         warranty_until=now + timedelta(days=warranty_days),
         price_cents=price_cents,
     )
-    move_state(unit, UnitState.ISSUED, actor=actor, reason="видача")
+    move_state(unit, UnitState.ISSUED, actor=actor, reason="issued")
     log(
         "issue.created",
         actor=actor,
@@ -124,26 +120,24 @@ def issue_unit(
 
 
 @transaction.atomic
-def renew_unit(
-    *, unit_ref: str, period_days: int, price_cents: int, actor: str = "system"
-) -> Renewal:
-    """Продовжити строк дії одиниці.
+def renew_unit(*, unit_ref: str, period_days: int, price_cents: int, actor: str = "system") -> Renewal:
+    """Extend a unit's expiry date.
 
-    Відлік іде від ``max(зараз, поточний строк)``, а не від ``зараз``.
-    Інакше клієнт, який продовжив за тиждень до кінця, мовчки втрачає
-    ці сім оплачених днів. Це найчастіша помилка в такій логіці, тому на
-    неї є окремий тест.
+    The extension counts from ``max(now, current expiry)``, not from ``now``.
+    Otherwise a client who renews a week before the end silently loses those
+    seven paid days. This is the most common mistake in this kind of logic,
+    so it has a test of its own.
     """
     if period_days < 1:
-        # Серіалізатор ловить це на HTTP, але сервіс кличуть ще з
-        # management-команди і з адмінки. Нульове продовження лишало б
-        # у Renewal запис, який нічого не змінив, і історія починала б
-        # брехати про те, що з одиницею робили.
-        raise DomainError("продовження має бути хоча б на один день")
+        # The serializer catches this over HTTP, but the service is also
+        # called from a management command and from the admin. A zero-day
+        # renewal would leave a Renewal row that changed nothing, and the
+        # history would start lying about what was done to the unit.
+        raise DomainError("a renewal must be at least one day long")
 
     unit = Unit.objects.select_for_update().get(ref=unit_ref)
     if unit.state == UnitState.REVOKED:
-        raise IllegalTransition("відкликану одиницю не продовжуємо")
+        raise IllegalTransition("a revoked unit is not renewed")
 
     now = timezone.now()
     base = unit.expires_at if unit.expires_at and unit.expires_at > now else now
@@ -152,7 +146,7 @@ def renew_unit(
     unit.save(update_fields=["expires_at", "updated_at"])
 
     if unit.state == UnitState.EXPIRED:
-        move_state(unit, UnitState.ISSUED, actor=actor, reason="продовження")
+        move_state(unit, UnitState.ISSUED, actor=actor, reason="renewed")
 
     renewal = Renewal.objects.create(
         unit=unit,
@@ -174,33 +168,31 @@ def renew_unit(
 
 @transaction.atomic
 def open_claim(*, issue_id: int, reason: str, actor: str = "system") -> WarrantyClaim:
-    """Прийняти рекламацію, якщо гарантійне вікно ще відкрите.
+    """Accept a warranty claim if the warranty window is still open.
 
-    Трьох перевірок мало б бути одна, але кожна закриває свій шлях до
-    безкоштовної заміни:
+    Three checks where one looks like it should be enough. Each of them
+    closes a separate route to a free replacement:
 
-    1. Вікно. Очевидна.
-    2. Видача ще активна. Без цього по закритій видачі можна було
-       відкрити другу рекламацію: стара одиниця вже REVOKED, повторний
-       перехід у REVOKED це no-op, і сервіс спокійно видавав ще одну
-       заміну. Одна оплачена видача давала дві безкоштовні одиниці.
-    3. Відкритої рекламації ще немає. Інакше та сама діра досягається
-       двома заявками паралельно, до першого схвалення.
+    1. The window itself. The obvious one.
+    2. The issue is still active. Without this, a closed issue could be
+       claimed a second time: the old unit is already REVOKED, moving it to
+       REVOKED again is a no-op, and the service happily handed out another
+       replacement. One paid issue produced two free units.
+    3. No open claim exists yet. Otherwise the same hole is reached with two
+       parallel claims filed before the first one is approved.
 
-    ``select_for_update`` потрібен саме через пункт 3: два одночасні
-    запити інакше обидва побачили б нуль відкритих заявок.
+    ``select_for_update`` is here for case 3: without it two concurrent
+    requests would both see zero open claims.
     """
     issue = Issue.objects.select_for_update().select_related("unit").get(pk=issue_id)
     now = timezone.now()
 
     if now > issue.warranty_until:
-        raise WarrantyExpired(
-            f"гарантія на видачу {issue_id} закінчилась {issue.warranty_until:%Y-%m-%d %H:%M}"
-        )
+        raise WarrantyExpired(f"warranty on issue {issue_id} ended {issue.warranty_until:%Y-%m-%d %H:%M}")
     if not issue.is_active:
-        raise IssueClosed(f"видача {issue_id} вже закрита, рекламація неможлива")
+        raise IssueClosed(f"issue {issue_id} is closed, it cannot be claimed")
     if issue.claims.filter(state=ClaimState.OPEN).exists():
-        raise ClaimAlreadyOpen(f"по видачі {issue_id} вже є відкрита рекламація")
+        raise ClaimAlreadyOpen(f"issue {issue_id} already has an open claim")
 
     claim = WarrantyClaim.objects.create(issue=issue, reason=reason)
     log("claim.opened", actor=actor, unit=issue.unit, issue=issue, reason=reason)
@@ -208,19 +200,15 @@ def open_claim(*, issue_id: int, reason: str, actor: str = "system") -> Warranty
 
 
 @transaction.atomic
-def approve_claim(
-    *, claim_id: int, replacement_ref: str, actor: str = "system"
-) -> Issue:
-    """Задовольнити рекламацію: стару одиницю відкликати, видати заміну.
+def approve_claim(*, claim_id: int, replacement_ref: str, actor: str = "system") -> Issue:
+    """Approve a claim: revoke the old unit and issue a replacement.
 
-    Гарантія на заміну рахується від дати заміни. Стара видача
-    закривається, але не видаляється: історія має лишитись повною.
+    The replacement gets a fresh warranty counted from the replacement date.
+    The old issue is closed but never deleted: the history has to stay whole.
     """
-    claim = WarrantyClaim.objects.select_related("issue__unit", "issue__client").get(
-        pk=claim_id
-    )
+    claim = WarrantyClaim.objects.select_related("issue__unit", "issue__client").get(pk=claim_id)
     if claim.state != ClaimState.OPEN:
-        raise DomainError(f"рекламація {claim_id} вже {claim.state}")
+        raise DomainError(f"claim {claim_id} is already {claim.state}")
 
     old_issue = claim.issue
     old_unit = old_issue.unit
@@ -228,9 +216,7 @@ def approve_claim(
     old_issue.is_active = False
     old_issue.closed_at = timezone.now()
     old_issue.save(update_fields=["is_active", "closed_at", "updated_at"])
-    move_state(
-        old_unit, UnitState.REVOKED, actor=actor, reason=f"рекламація {claim_id}"
-    )
+    move_state(old_unit, UnitState.REVOKED, actor=actor, reason=f"claim {claim_id}")
 
     new_issue = issue_unit(
         unit_ref=replacement_ref,
@@ -258,7 +244,7 @@ def approve_claim(
 def reject_claim(*, claim_id: int, actor: str = "system") -> WarrantyClaim:
     claim = WarrantyClaim.objects.get(pk=claim_id)
     if claim.state != ClaimState.OPEN:
-        raise DomainError(f"рекламація {claim_id} вже {claim.state}")
+        raise DomainError(f"claim {claim_id} is already {claim.state}")
     claim.state = ClaimState.REJECTED
     claim.resolved_at = timezone.now()
     claim.save(update_fields=["state", "resolved_at", "updated_at"])
@@ -266,21 +252,22 @@ def reject_claim(*, claim_id: int, actor: str = "system") -> WarrantyClaim:
     return claim
 
 
-#: Скільки днів після закінчення строку одиниця ще вважається живою.
-#: Далі це мертвий інвентар: нагадувати про продовження ліцензії, що
-#: протухла два роки тому, означає спамити людину, яка давно пішла.
+#: How many days past its expiry a unit is still considered alive.
+#: Beyond that it is dead stock: reminding somebody to renew a licence that
+#: expired two years ago means spamming a customer who left long ago.
 DEFAULT_GRACE_DAYS = 30
 
 
 def expiring_units(days: int, *, grace_days: int = DEFAULT_GRACE_DAYS) -> QuerySet[Unit]:
-    """Одиниці, у яких строк спливає протягом ``days`` днів.
+    """Units whose expiry falls within the next ``days`` days.
 
-    Вікно двостороннє. Верхня межа очевидна: ``зараз + days``. Нижня
-    менш очевидна і важливіша: без неї в вибірку падає весь архів, бо
-    умова «строк <= зараз + 14 днів» істинна і для 2019 року.
+    The window has two edges. The upper one is obvious: ``now + days``. The
+    lower one is less obvious and matters more: without it the whole archive
+    falls into the queryset, because "expiry <= now + 14 days" is also true
+    for the year 2019.
 
-    Тільки видані і прострочені. Вільна одиниця нікому не видана,
-    нагадувати нема кому.
+    Issued and expired units only. A free unit is not held by anyone, so
+    there is nobody to remind.
     """
     now = timezone.now()
     return Unit.objects.filter(
@@ -292,7 +279,7 @@ def expiring_units(days: int, *, grace_days: int = DEFAULT_GRACE_DAYS) -> QueryS
 
 
 def stale_issued_units() -> QuerySet[Unit]:
-    """Видані одиниці, у яких строк уже вичерпано. Без блокування, для перегляду."""
+    """Issued units that are already past expiry. No locking, for previews."""
     return Unit.objects.filter(
         state=UnitState.ISSUED, expires_at__isnull=False, expires_at__lte=timezone.now()
     ).order_by("expires_at")
@@ -300,17 +287,17 @@ def stale_issued_units() -> QuerySet[Unit]:
 
 @transaction.atomic
 def sweep_expired(*, actor: str = "system") -> int:
-    """Перевести видані одиниці з вичерпаним строком у EXPIRED.
+    """Move issued units whose term ran out into EXPIRED.
 
-    Єдине місце, де зміна стану йде повз ``move_state``, і це свідомо:
-    підмітання зачіпає скільки завгодно рядків, а порядковий save плюс
-    порядковий запис події дали б два запити на одиницю.
+    The only place where a state change bypasses ``move_state``, and that is
+    deliberate: a sweep touches an unbounded number of rows, and a per-row
+    save plus a per-row event write would cost two queries per unit.
 
-    Інваріант при цьому не порушується. Перехід ISSUED -> EXPIRED
-    перевірений у білому списку (``test_transition_whitelist``), а події
-    пишуться тим самим пакетом, у тій самій транзакції. Тест
-    ``test_sweep_writes_one_event_per_unit`` стежить, щоб кількість подій
-    збігалась з кількістю переведених.
+    The invariant still holds. The ISSUED -> EXPIRED transition is checked
+    against the whitelist in ``test_transition_whitelist``, and the events
+    are written in the same batch inside the same transaction. The test
+    ``test_sweep_writes_one_event_per_unit`` keeps the number of events
+    equal to the number of units moved.
     """
     now = timezone.now()
     stale = list(
@@ -321,9 +308,7 @@ def sweep_expired(*, actor: str = "system") -> int:
     if not stale:
         return 0
 
-    Unit.objects.filter(pk__in=[u.pk for u in stale]).update(
-        state=UnitState.EXPIRED, updated_at=now
-    )
+    Unit.objects.filter(pk__in=[u.pk for u in stale]).update(state=UnitState.EXPIRED, updated_at=now)
     Event.objects.bulk_create(
         [
             Event(
@@ -333,7 +318,7 @@ def sweep_expired(*, actor: str = "system") -> int:
                 payload={
                     "from": UnitState.ISSUED,
                     "to": UnitState.EXPIRED,
-                    "reason": "строк вичерпано",
+                    "reason": "term ran out",
                 },
             )
             for u in stale
@@ -346,29 +331,27 @@ def sweep_expired(*, actor: str = "system") -> int:
 def send_renewal_reminders(
     *, days: int, grace_days: int = DEFAULT_GRACE_DAYS, actor: str = "system"
 ) -> list[Unit]:
-    """Нагадати про продовження, рівно один раз на один строк.
+    """Send renewal reminders, exactly once per expiry date.
 
-    Ідемпотентність тримає ``ReminderLog`` з унікальним ключем
-    (одиниця, тип, строк). Повторний запуск нічого не надішле, тому cron
-    можна ставити частіше, ніж раз на добу, і не боятись дублів.
+    Idempotency is held by ``ReminderLog`` with a unique key of
+    (unit, kind, expiry). A second run sends nothing, so the cron entry can
+    fire more often than once a day without producing duplicates.
 
-    Кількість запитів стала і не залежить від розміру вибірки. Наївна
-    версія робила ``get_or_create`` плюс запис події на кожну одиницю,
-    тобто близько п'яти запитів на штуку: на десяти тисячах ліцензій це
-    десятки тисяч звернень до бази за один запуск cron.
+    The query count is constant and does not depend on the size of the
+    queryset. The naive version called ``get_or_create`` and wrote an event
+    per unit, roughly five queries each: on ten thousand licences that is
+    tens of thousands of round trips per cron run.
 
-    ``select_for_update`` серіалізує два cron-и, що стартували одночасно:
-    без нього обидва прочитали б порожній ReminderLog і обидва відзвітували
-    б про відправку, хоча запис у базі лишився б один.
+    ``select_for_update`` serialises two cron runs that started at the same
+    moment: without it both would read an empty ReminderLog and both would
+    report the reminder as sent, while only one row landed in the database.
     """
     units = list(expiring_units(days, grace_days=grace_days).select_for_update())
     if not units:
         return []
 
     already = set(
-        ReminderLog.objects.filter(kind="renewal", unit__in=units).values_list(
-            "unit_id", "for_expires_at"
-        )
+        ReminderLog.objects.filter(kind="renewal", unit__in=units).values_list("unit_id", "for_expires_at")
     )
     fresh = [u for u in units if (u.id, u.expires_at) not in already]
     if not fresh:

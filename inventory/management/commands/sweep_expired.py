@@ -1,13 +1,13 @@
-"""Перевести видані одиниці з вичерпаним строком у стан «строк вийшов».
+"""Move issued units whose term ran out into the expired state.
 
     python manage.py sweep_expired
 
-Без цієї команди стан у базі відстає від реальності: одиниця показується
-виданою ще довго після того, як перестала працювати. Ставиться в cron
-поруч із нагадуваннями, зазвичай раз на годину.
+Without this command the stored state lags behind reality: a unit still
+shows as issued long after it stopped working. Schedule it next to the
+reminders, usually once an hour.
 
-Ідемпотентна за побудовою: другий запуск поспіль знайде нуль одиниць,
-бо перший уже перевів усі знайдені.
+Idempotent by construction: a second run in a row finds zero units, because
+the first one already moved everything it found.
 """
 
 from django.core.management.base import BaseCommand, CommandParser
@@ -16,18 +16,18 @@ from inventory import services
 
 
 class Command(BaseCommand):
-    help = "Перевести прострочені видані одиниці у стан expired"
+    help = "Move expired issued units into the expired state"
 
     def add_arguments(self, parser: CommandParser) -> None:
-        parser.add_argument("--dry-run", action="store_true", help="показати список і нічого не міняти")
+        parser.add_argument("--dry-run", action="store_true", help="print the list, change nothing")
 
     def handle(self, *args: object, **options: object) -> None:
         if options["dry_run"]:
             stale = list(services.stale_issued_units())
             for unit in stale:
-                self.stdout.write(f"{unit.ref}: строк вийшов {unit.expires_at:%Y-%m-%d %H:%M}")
-            self.stdout.write(self.style.WARNING(f"пробний запуск, знайдено {len(stale)}"))
+                self.stdout.write(f"{unit.ref}: expired {unit.expires_at:%Y-%m-%d %H:%M}")
+            self.stdout.write(self.style.WARNING(f"dry run, found {len(stale)}"))
             return
 
         moved = services.sweep_expired(actor="cron")
-        self.stdout.write(self.style.SUCCESS(f"переведено в expired: {moved}"))
+        self.stdout.write(self.style.SUCCESS(f"moved to expired: {moved}"))

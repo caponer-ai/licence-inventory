@@ -25,8 +25,8 @@ class UnitSerializer(serializers.ModelSerializer):
             "expires_at",
             "note",
         ]
-        # expires_at змінюється лише через renew, щоб кожна нова дата
-        # мала запис у Renewal і подію в журналі.
+        # expires_at changes only through `renew`, so that every new date
+        # has a Renewal row and an entry in the audit log behind it.
         read_only_fields = ["state", "expires_at"]
 
 
@@ -50,7 +50,8 @@ class IssueSerializer(serializers.ModelSerializer):
 
 
 class IssueCreateSerializer(serializers.Serializer):
-    """Вхід окремо від виходу: клієнт не надсилає стан, ми не приймаємо зайве."""
+    """Input kept separate from output: the client does not send state and
+    we do not accept fields we did not ask for."""
 
     unit_ref = serializers.CharField(max_length=64)
     client_id = serializers.IntegerField(min_value=1)
@@ -88,15 +89,7 @@ class RenewalSerializer(serializers.ModelSerializer):
 class WarrantyClaimSerializer(serializers.ModelSerializer):
     class Meta:
         model = WarrantyClaim
-        fields = [
-            "id",
-            "issue",
-            "reason",
-            "state",
-            "replacement_unit",
-            "created_at",
-            "resolved_at",
-        ]
+        fields = ["id", "issue", "reason", "state", "replacement_unit", "created_at", "resolved_at"]
 
 
 class EventSerializer(serializers.ModelSerializer):

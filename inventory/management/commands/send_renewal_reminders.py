@@ -1,12 +1,12 @@
-"""Нагадування про продовження.
+"""Renewal reminders.
 
-Запускається з cron або systemd-таймера:
+Run from cron or a systemd timer:
 
     python manage.py send_renewal_reminders --days 14
 
-Команда ідемпотентна: на один строк дії одне нагадування, скільки б разів
-її не запустили. Тому безпечно ставити кожну годину, і перезапуск cron
-після збою нічого не задублює.
+The command is idempotent: one reminder per expiry date, no matter how many
+times it runs. It is therefore safe to schedule hourly, and restarting cron
+after a failure never duplicates a send.
 """
 
 from django.core.management.base import BaseCommand, CommandParser
@@ -15,14 +15,14 @@ from inventory import services
 
 
 class Command(BaseCommand):
-    help = "Надіслати нагадування про продовження одиниць, у яких спливає строк"
+    help = "Send renewal reminders for units whose term is running out"
 
     def add_arguments(self, parser: CommandParser) -> None:
-        parser.add_argument("--days", type=int, default=14, help="горизонт у днях")
+        parser.add_argument("--days", type=int, default=14, help="horizon in days")
         parser.add_argument(
             "--dry-run",
             action="store_true",
-            help="показати список і нічого не позначати",
+            help="print the list and mark nothing",
         )
 
     def handle(self, *args: object, **options: object) -> None:
@@ -31,13 +31,11 @@ class Command(BaseCommand):
         if options["dry_run"]:
             units = list(services.expiring_units(days))
             for unit in units:
-                self.stdout.write(f"{unit.ref}: строк {unit.expires_at:%Y-%m-%d %H:%M}")
-            self.stdout.write(
-                self.style.WARNING(f"пробний запуск, знайдено {len(units)}")
-            )
+                self.stdout.write(f"{unit.ref}: expires {unit.expires_at:%Y-%m-%d %H:%M}")
+            self.stdout.write(self.style.WARNING(f"dry run, found {len(units)}"))
             return
 
         sent = services.send_renewal_reminders(days=days)
         for unit in sent:
-            self.stdout.write(f"нагадано: {unit.ref} до {unit.expires_at:%Y-%m-%d}")
-        self.stdout.write(self.style.SUCCESS(f"надіслано нагадувань: {len(sent)}"))
+            self.stdout.write(f"reminded: {unit.ref} until {unit.expires_at:%Y-%m-%d}")
+        self.stdout.write(self.style.SUCCESS(f"reminders sent: {len(sent)}"))

@@ -1,7 +1,8 @@
-"""Налаштування проєкту.
+"""Project settings.
 
-Секрети й режим беремо з оточення. Дефолти безпечні для локального
-запуску: якщо змінну забули на проді, падає DEBUG=False, а не навпаки.
+Secrets and the run mode come from the environment. The defaults are safe
+for a local run: if a variable is forgotten in production, the app fails
+loudly instead of quietly running with a development key.
 """
 
 import os
@@ -12,33 +13,29 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Читаємо .env, якщо він є. Змінні, вже задані в оточенні, мають
-# пріоритет (override=False): інакше файл на диску тихо перебивав би те,
-# що задав systemd або docker compose, і причину шукали б довго.
+# Load .env if it exists. Variables already present in the environment win
+# (override=False): otherwise a file on disk would silently override what
+# systemd or docker compose set, and the cause would take a while to find.
 load_dotenv(BASE_DIR / ".env", override=False)
 
-# Режим задається явно. Саме він, а не DEBUG, керує тим, чи можна
-# обійтись без секретного ключа і чи вмикати жорсткі налаштування.
-# Розведено навмисно: DEBUG=False локально це нормальний випадок
-# (так йдуть тести), і він не має вимагати продових секретів.
+# The run mode is explicit. It, rather than DEBUG, decides whether the
+# secret key may be omitted and whether hardening is switched on. The two
+# are deliberately separate: DEBUG=False locally is a normal case (that is
+# how tests run) and it should not demand production secrets.
 ENV = os.environ.get("DJANGO_ENV", "local")
 IS_PRODUCTION = ENV == "production"
 
 DEBUG = os.environ.get("DJANGO_DEBUG", "0") == "1" and not IS_PRODUCTION
 
-# На проді ключ обов'язковий: краще впасти на старті, ніж тихо
-# працювати з ключем, який лежить у публічному репозиторії.
+# In production the key is mandatory: better to fail at startup than to run
+# quietly with a key that sits in a public repository.
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "")
 if not SECRET_KEY:
     if IS_PRODUCTION:
-        raise ImproperlyConfigured("DJANGO_SECRET_KEY обов'язковий при DJANGO_ENV=production")
+        raise ImproperlyConfigured("DJANGO_SECRET_KEY is required when DJANGO_ENV=production")
     SECRET_KEY = "local-development-only-3f8a1c9e7b2d4a6f5e0c8b1d9a7f3e2c6b4d8a0f"
 
-ALLOWED_HOSTS = [
-    h
-    for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
-    if h
-]
+ALLOWED_HOSTS = [h for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h]
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -82,8 +79,8 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 
-# SQLite за замовчуванням, щоб проєкт піднімався однією командою.
-# Задано POSTGRES_DB -> йдемо в Postgres без зміни коду.
+# SQLite by default so the project starts with no external dependencies.
+# Set POSTGRES_DB and it goes to Postgres without a code change.
 if os.environ.get("POSTGRES_DB"):
     DATABASES = {
         "default": {
@@ -104,16 +101,14 @@ else:
     }
 
 AUTH_PASSWORD_VALIDATORS = [
-    {
-        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
-    },
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
-LANGUAGE_CODE = "uk"
-TIME_ZONE = "Europe/Kyiv"
+LANGUAGE_CODE = "en-us"
+TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
@@ -126,8 +121,9 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
     "EXCEPTION_HANDLER": "inventory.exceptions.exception_handler",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    # Закрито за замовчуванням. Відкриті точки (healthz, схема) вмикають
-    # доступ явно, а не навпаки: забути закрити легше, ніж забути відкрити.
+    # Closed by default. The open endpoints (healthz, the schema) opt in
+    # explicitly rather than the other way round: forgetting to close is
+    # easier than forgetting to open.
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.TokenAuthentication",
         "rest_framework.authentication.SessionAuthentication",
@@ -140,19 +136,19 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": os.environ.get("THROTTLE_ANON", "20/min"),
         "user": os.environ.get("THROTTLE_USER", "600/min"),
-        # Логін жорсткіший за все інше: це єдине місце, де перевіряється
-        # пароль, і єдине, куди можна стукати без токена.
+        # Login is stricter than everything else: it is the only place a
+        # password is checked and the only one reachable without a token.
         "login": os.environ.get("THROTTLE_LOGIN", "5/min"),
     },
 }
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "licence-inventory API",
-    "DESCRIPTION": "Облік одиниць з обмеженим строком дії: видача, продовження, гарантія.",
+    "DESCRIPTION": "Inventory of units with a limited lifetime: issuing, renewal, warranty.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
-    # Локально документація відкрита, щоб її було видно одразу після
-    # клонування. На проді схема це карта твого API, тому за токеном.
+    # Locally the docs are open so they are visible right after cloning.
+    # In production the schema is a map of your API, so it sits behind a token.
     "SERVE_PERMISSIONS": (
         ["rest_framework.permissions.IsAuthenticated"]
         if IS_PRODUCTION
@@ -160,8 +156,8 @@ SPECTACULAR_SETTINGS = {
     ),
 }
 
-# Жорсткі налаштування ввімкнені рівно на проді.
-# Локально вони б ламали http://localhost і тести, тому розвилка.
+# Hardening is switched on exactly in production. Locally these settings
+# would break http://localhost and the test run, hence the branch.
 if IS_PRODUCTION:
     SECURE_SSL_REDIRECT = True
     SECURE_HSTS_SECONDS = 60 * 60 * 24 * 365

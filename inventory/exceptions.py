@@ -1,11 +1,11 @@
-"""Один обробник помилок замість try/except у кожній в'юсі.
+"""One error handler instead of a try/except in every view.
 
-До цього кожна дія мала власний блок на шість рядків, який ловив
-``DomainError`` і ``ObjectDoesNotExist``. Це дублювання, і воно ламається
-тихо: варто забути блок в одній новій дії, і порушене бізнес-правило
-поїде користувачу як 500.
+Before this, each action carried its own six-line block catching
+``DomainError`` and ``ObjectDoesNotExist``. That is duplication, and it
+fails quietly: forget the block in one new action and a violated business
+rule reaches the client as a 500.
 
-Тепер правило одне і живе в одному місці.
+Now the rule exists once, in one place.
 """
 
 from django.core.exceptions import ObjectDoesNotExist
@@ -18,11 +18,12 @@ from .services import DomainError
 
 
 def exception_handler(exc: Exception, context: dict) -> Response | None:
-    """Доменні помилки це відповідь, а не аварія.
+    """A domain error is an answer, not an outage.
 
-    ``ProtectedError`` окремо: спроба видалити те, на що є посилання,
-    без цього обробника летить назовні і стає 500. Для клієнта це виглядає
-    як поломка сервера, хоча система відпрацювала правильно.
+    ``ProtectedError`` is handled separately: without this, an attempt to
+    delete something that is still referenced escapes and becomes a 500.
+    To the client that looks like a broken server, even though the system
+    behaved exactly as designed.
     """
     if isinstance(exc, DomainError):
         return Response(
@@ -33,7 +34,7 @@ def exception_handler(exc: Exception, context: dict) -> Response | None:
     if isinstance(exc, ProtectedError):
         return Response(
             {
-                "detail": "об'єкт не можна видалити: на нього є посилання в історії",
+                "detail": "the object is referenced by history and cannot be deleted",
                 "code": "ProtectedError",
             },
             status=status.HTTP_409_CONFLICT,
@@ -41,7 +42,7 @@ def exception_handler(exc: Exception, context: dict) -> Response | None:
 
     if isinstance(exc, ObjectDoesNotExist):
         return Response(
-            {"detail": "не знайдено", "code": "NotFound"},
+            {"detail": "not found", "code": "NotFound"},
             status=status.HTTP_404_NOT_FOUND,
         )
 

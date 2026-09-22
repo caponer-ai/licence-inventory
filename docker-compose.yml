@@ -1,6 +1,6 @@
-# Підняти сервіс на Postgres однією командою:
+# Bring the service up on Postgres with one command:
 #   docker compose up --build
-# Далі міграції і демо-дані:
+# Then migrations and demo data:
 #   docker compose exec web python manage.py migrate
 #   docker compose exec web python manage.py seed_demo
 
@@ -25,9 +25,9 @@ services:
         condition: service_healthy
     environment:
       DJANGO_ENV: local
-      # Відрізняється від .env.example навмисно: там дефолт 0, бо файл
-      # копіюють і на прод, а тут compose підіймає саме середовище
-      # розробки, де потрібні сторінки помилок Django.
+      # Differs from .env.example on purpose: that file defaults to 0
+      # because it also gets copied to servers, while compose brings up a
+      # development environment where Django's error pages are wanted.
       DJANGO_DEBUG: "1"
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
       POSTGRES_DB: licence_inventory

@@ -1,7 +1,8 @@
-"""Продовження строку дії.
+"""Extending a unit's lifetime.
 
-Головний тест файлу: ``test_renewal_does_not_eat_paid_days``. Це найчастіша
-помилка в такій логіці, і саме через неї клієнти пишуть у підтримку.
+The key test in this file is ``test_renewal_does_not_eat_paid_days``. That
+is the most common mistake in this kind of logic, and the one that makes
+clients write to support.
 """
 
 from datetime import timedelta
@@ -16,11 +17,11 @@ from inventory.states import UnitState
 
 @pytest.mark.django_db
 def test_renewal_does_not_eat_paid_days(make_unit):
-    """Продовження додається до чинного строку, а не до «зараз».
+    """A renewal adds to the current term, not to "now".
 
-    Клієнт продовжує за 10 днів до кінця на 365 днів. Правильний
-    результат: 375 днів від сьогодні. Наївна реалізація ``now + 365``
-    мовчки з'їдає 10 оплачених днів.
+    The client renews ten days before the end, for 365 days. The correct
+    result is 375 days from today. A naive ``now + 365`` silently eats the
+    ten days that were already paid for.
     """
     unit = make_unit("U-RENEW", state=UnitState.ISSUED, expires_in_days=10)
     before = unit.expires_at
@@ -28,19 +29,18 @@ def test_renewal_does_not_eat_paid_days(make_unit):
     services.renew_unit(unit_ref="U-RENEW", period_days=365, price_cents=20000)
 
     unit.refresh_from_db()
-    gained = unit.expires_at - before
-    assert gained == timedelta(days=365)
+    assert unit.expires_at - before == timedelta(days=365)
 
-    # І дата справді далеко попереду: 10 днів, що лишались, плюс 365.
+    # And the date really is far ahead: the ten remaining days plus 365.
     assert unit.expires_at > timezone.now() + timedelta(days=374)
 
 
 @pytest.mark.django_db
 def test_renewal_of_expired_counts_from_now(make_unit):
-    """Якщо строк уже вийшов, відлік іде від «зараз», а не від минулого.
+    """If the term already ran out, the count starts at "now", not in the past.
 
-    Інакше продовження прострочки на 30 днів дало б дату, яка теж у
-    минулому, і одиниця лишилась би непрацездатною після оплати.
+    Otherwise renewing a 40-day-old expiry by 30 days would produce a date
+    that is also in the past, and the unit would stay dead after payment.
     """
     unit = make_unit("U-STALE", state=UnitState.EXPIRED, expires_in_days=-40)
 
@@ -49,9 +49,10 @@ def test_renewal_of_expired_counts_from_now(make_unit):
     after = timezone.now()
 
     unit.refresh_from_db()
-    # Точна межа замість порівняння з "зараз": відлік стартував десь між
-    # before і after, тому нова дата лежить рівно в цьому коридорі.
-    # Перевірка з .days тут плавала б на межі мілісекунди.
+    # An exact corridor instead of comparing against "now": the count
+    # started somewhere between before and after, so the new date sits
+    # exactly in that range. A check using .days would flicker on the
+    # millisecond boundary.
     assert before + timedelta(days=30) <= unit.expires_at <= after + timedelta(days=30)
 
 
@@ -65,7 +66,7 @@ def test_renewal_returns_expired_unit_to_issued(make_unit):
 
 @pytest.mark.django_db
 def test_renewal_records_both_dates(make_unit):
-    """Історія має пояснювати, звідки взялась нова дата."""
+    """The history has to explain where the new date came from."""
     unit = make_unit("U-HIST", state=UnitState.ISSUED, expires_in_days=5)
     previous = unit.expires_at
 
@@ -85,7 +86,7 @@ def test_revoked_unit_cannot_be_renewed(make_unit):
 
 @pytest.mark.django_db
 def test_first_renewal_of_unit_without_expiry(make_unit):
-    """Одиниця без строку: відлік від «зараз», падати не має."""
+    """A unit with no expiry: count from "now", and do not crash."""
     from inventory.models import Unit
 
     make_unit("U-FRESH", state=UnitState.ISSUED, expires_in_days=None)
@@ -100,16 +101,15 @@ def test_first_renewal_of_unit_without_expiry(make_unit):
 
 @pytest.mark.django_db
 def test_zero_day_renewal_is_refused(make_unit):
-    """Порожнє продовження засмічувало б історію записом ні про що.
+    """An empty renewal would litter the history with a row about nothing.
 
-    Серіалізатор ловить це на HTTP, але сервіс кличуть ще з
-    management-команди і з адмінки, тому правило живе в сервісі.
+    The serializer catches this over HTTP, but the service is also called
+    from a management command and from the admin, so the rule lives in the
+    service.
     """
     make_unit("U-ZERO", state=UnitState.ISSUED, expires_in_days=5)
 
     with pytest.raises(services.DomainError):
         services.renew_unit(unit_ref="U-ZERO", period_days=0, price_cents=0)
-
-    from inventory.models import Renewal
 
     assert Renewal.objects.count() == 0

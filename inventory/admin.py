@@ -11,25 +11,24 @@ class UnitAdmin(admin.ModelAdmin):
     list_display = ("ref", "tier", "state", "expires_at", "cost_cents")
     list_filter = ("state", "tier")
     search_fields = ("ref", "note")
-    # Стан і строк дії міняються тільки через сервіс: інакше адмінка
-    # лишається дірою в тому самому інваріанті, який закритий в API.
-    # Продовжити строк можна дією нижче, вона пише в Renewal і в журнал.
+    # State and expiry change only through the service layer, otherwise the
+    # admin stays a hole in the very invariant the API closes. Extending a
+    # term is available as the action below, which writes a Renewal row and
+    # an audit log entry.
     readonly_fields = ("state", "expires_at")
     actions = ["renew_30_days"]
 
-    @admin.action(description="Продовити на 30 днів")
+    @admin.action(description="Renew for 30 days")
     def renew_30_days(self, request: HttpRequest, queryset: QuerySet) -> None:
         actor = request.user.username or "admin"
         done = 0
         for unit in queryset:
             try:
-                services.renew_unit(
-                    unit_ref=unit.ref, period_days=30, price_cents=0, actor=actor
-                )
+                services.renew_unit(unit_ref=unit.ref, period_days=30, price_cents=0, actor=actor)
                 done += 1
             except services.DomainError as exc:
                 self.message_user(request, f"{unit.ref}: {exc}", level=messages.WARNING)
-        self.message_user(request, f"продовжено: {done}")
+        self.message_user(request, f"renewed: {done}")
 
 
 @admin.register(Client)
@@ -40,27 +39,14 @@ class ClientAdmin(admin.ModelAdmin):
 
 @admin.register(Issue)
 class IssueAdmin(admin.ModelAdmin):
-    list_display = (
-        "unit",
-        "client",
-        "issued_at",
-        "warranty_until",
-        "price_cents",
-        "is_active",
-    )
+    list_display = ("unit", "client", "issued_at", "warranty_until", "price_cents", "is_active")
     list_filter = ("is_active",)
     search_fields = ("unit__ref", "client__name")
 
 
 @admin.register(Renewal)
 class RenewalAdmin(admin.ModelAdmin):
-    list_display = (
-        "unit",
-        "period_days",
-        "price_cents",
-        "previous_expires_at",
-        "new_expires_at",
-    )
+    list_display = ("unit", "period_days", "price_cents", "previous_expires_at", "new_expires_at")
 
 
 @admin.register(WarrantyClaim)

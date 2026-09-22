@@ -1,14 +1,17 @@
 # licence-inventory
 
-Сервіс обліку одиниць з обмеженим строком дії: ліцензій, акаунтів, підписок.
-Django 5 + DRF. Покриває життєвий цикл одиниці: надходження, видача клієнту,
-продовження строку, гарантійне вікно з заміною, нагадування, журнал дій.
+An inventory service for units with a limited lifetime: licences, accounts,
+subscriptions. Django 5 + DRF. It covers the whole life of a unit: intake,
+issuing to a client, renewal, a warranty window with replacement, reminders,
+and an audit log.
 
-Написано як демонстрація роботи з Django. Не туторіал і не CRUD-скелет: тут
-кілька конкретних правил предметної області, кожне доведене до тесту, і
-кілька місць, де очевидна реалізація тихо неправильна.
+Written as a demonstration of working with Django. Not a tutorial and not a
+CRUD skeleton: a handful of concrete domain rules, each one pinned by a test,
+and a handful of places where the obvious implementation is quietly wrong.
 
-## Запустити за хвилину
+> Ukrainian version of this document: [README.uk.md](README.uk.md).
+
+## Run it in a minute
 
 ```bash
 python -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate
@@ -18,20 +21,20 @@ python manage.py seed_demo
 python manage.py runserver
 ```
 
-`seed_demo` створює двох клієнтів, шість одиниць, три видачі, одну відкриту
-рекламацію і одну прострочену одиницю, яку одразу підмітає `sweep_expired`.
-Також створює користувача `demo` / `demo` і **друкує його токен**, тому перший
-же запит працює:
+`seed_demo` creates two clients, six units, three issues, one open claim and
+one expired unit that `sweep_expired` picks up straight away. It also creates
+a `demo` / `demo` user and **prints its token**, so the very first request
+works:
 
 ```bash
-curl -H "Authorization: Token <токен з виводу seed_demo>" \
+curl -H "Authorization: Token <token from seed_demo output>" \
   http://localhost:8000/api/units/
 ```
 
-Документація API: <http://localhost:8000/api/docs/> (Swagger UI),
-сира схема: `/api/schema/`.
+API docs: <http://localhost:8000/api/docs/> (Swagger UI), raw schema at
+`/api/schema/`.
 
-Через Docker з Postgres:
+With Docker and Postgres:
 
 ```bash
 docker compose up --build
@@ -39,271 +42,276 @@ docker compose exec web python manage.py migrate
 docker compose exec web python manage.py seed_demo
 ```
 
-Без Docker база за замовчуванням SQLite, щоб проєкт піднімався без зовнішніх
-залежностей. Задано `POSTGRES_DB` в оточенні або в `.env` (шаблон у
-`.env.example`) — код без змін іде в Postgres.
+Without Docker the database is SQLite by default, so the project starts with
+no external dependencies. Set `POSTGRES_DB` in the environment or in `.env`
+(template in `.env.example`) and it goes to Postgres with no code change.
 
-## Що всередині
+## What is inside
 
 ```
 inventory/
-  states.py       стани одиниці і білий список переходів
-  models.py       моделі, обмеження цілісності на рівні БД
-  services.py     уся бізнес-логіка, транзакції, журнал подій
-  permissions.py  хто що може
-  exceptions.py   один переклад доменних помилок у коди відповідей
-  serializers.py  вхід і вихід окремо
-  views.py        тонкий HTTP-шар без жодного try/except
-  auth_views.py   видача токена з обмеженням частоти
+  states.py       unit states and the transition allow-list
+  models.py       models, integrity constraints at the database level
+  services.py     all business logic, transactions, the audit log
+  permissions.py  who may do what
+  exceptions.py   one translation of domain errors into status codes
+  serializers.py  input and output kept apart
+  views.py        a thin HTTP layer with no try/except at all
+  auth_views.py   token issuance with a rate limit
   management/commands/
-    send_renewal_reminders.py   ідемпотентна розсилка під cron
-    sweep_expired.py            переведення прострочених
-    seed_demo.py                демо-дані і токен
-tests/            99 тестів
+    send_renewal_reminders.py   idempotent reminder job for cron
+    sweep_expired.py            moves expired units
+    seed_demo.py                demo data and a token
+tests/            99 tests
 ```
 
-Логіка живе в `services.py`, а не у в'юхах. Тому її видно з тестів, з
-management-команди і з адмінки однаково, і вона не дублюється.
+The logic lives in `services.py`, not in the views. That way it is reachable
+from tests, from a management command and from the admin in the same way, and
+it is not duplicated.
 
-## Рішення, які тут насправді цікаві
+## The decisions that actually matter here
 
-Кожне покрите тестом, назва тесту вказана поруч.
+Each one is covered by a test, named next to it.
 
-**1. Продовження рахується від `max(зараз, поточний строк)`, а не від «зараз».**
-Клієнт продовжує за 10 днів до кінця на рік. Наївне `now + 365` мовчки з'їдає
-ці 10 оплачених днів, і дізнаєшся про це зі скарги, а не з логів. Обидві гілки
-перевірені: `test_renewal_does_not_eat_paid_days`,
+**1. A renewal counts from `max(now, current expiry)`, not from "now".**
+A client renews ten days before the end, for a year. A naive `now + 365`
+silently eats those ten paid days, and you learn about it from a complaint
+rather than from the logs. Both branches are covered:
+`test_renewal_does_not_eat_paid_days`,
 `test_renewal_of_expired_counts_from_now`.
 
-**2. Дві активні видачі однієї одиниці неможливі на рівні БД.**
-Сервіс бере `select_for_update` і перевіряє стан. Але сервіс можна обійти:
-скрипт міграції, адмінка, чужий код. Тому на пару (одиниця, активна видача)
-стоїть частковий унікальний індекс, і
-`test_database_blocks_second_active_issue_even_past_the_service` перевіряє саме
-індекс, а не логіку над ним.
-Межа чесності: на SQLite `select_for_update` не робить нічого, її підтримує
-лише Postgres. Тому CI ганяє весь набір двічі, на обох базах: інакше головна
-гарантія від гонок не виконувалась би в CI жодного разу.
+**2. Two active issues of one unit are impossible at the database level.**
+The service takes `select_for_update` and checks the state. But the service
+can be bypassed: a data migration, the admin, somebody else's code. So there
+is a partial unique index on (unit, active issue), and
+`test_database_blocks_second_active_issue_even_past_the_service` exercises the
+index rather than the logic above it.
+An honest caveat: on SQLite `select_for_update` does nothing, only Postgres
+supports it. That is why CI runs the whole suite twice, on both backends;
+otherwise the main guarantee against races would never run in CI at all.
 
-**3. Ідемпотентність нагадувань за ключем (одиниця, тип, строк).**
-Не «одиниця», інакше клієнт, що продовжив один раз, більше ніколи не отримає
-нагадування: `test_renewal_opens_a_new_reminder_window`.
+**3. Reminders are idempotent on the key (unit, kind, expiry).**
+Not on "unit" alone, otherwise a client who renewed once would never be
+reminded again: `test_renewal_opens_a_new_reminder_window`.
 
-**4. Вікно нагадувань має нижню межу, а не лише верхню.**
-Умова «строк спливає протягом 14 днів» істинна і для ліцензії, що протухла
-три роки тому, тому в розсилку падав увесь архів. Тепер є `grace_days`:
-`test_long_dead_units_are_not_reminded`.
+**4. The reminder window has a lower edge, not just an upper one.**
+"Expires within 14 days" is also true for a licence that died three years
+ago, so the whole archive used to fall into the mailing. There is a
+`grace_days` bound now: `test_long_dead_units_are_not_reminded`.
 
-**5. Порушене бізнес-правило віддає 409, а не 500.**
-500 каже клієнтському коду «спробуй ще раз», і він довбає ендпоінт. 409 каже
-«стан не той» і в моніторингу видно окремо від справжніх аварій:
-`test_double_issue_returns_409_not_500`. Те саме для `ProtectedError`: спроба
-видалити об'єкт, на який є посилання в історії, це конфлікт, а не поломка
-сервера (`test_delete_unit_with_history_returns_409_not_500`).
+**5. A violated business rule returns 409, not 500.**
+A 500 tells client code "try again" and it hammers the endpoint. A 409 says
+"wrong state", and in monitoring it stands apart from real outages:
+`test_double_issue_returns_409_not_500`. The same holds for `ProtectedError`:
+trying to delete an object that history still references is a conflict, not a
+server failure (`test_delete_unit_with_history_returns_409_not_500`).
 
-**6. Жодної зміни стану повз журнал, і журнал називає людину.**
-`move_state` єдина точка переходу. Журнал тільки на дописування, в адмінці
-заборонені додавання, зміна і видалення. `expires_at` не редагується ні через
-API, ні в адмінці: єдиний шлях це `renew`, який пише і в `Renewal`, і в журнал
+**6. No state change bypasses the audit log, and the log names a person.**
+`move_state` is the single transition point. The log is append-only, and in
+the admin adding, changing and deleting entries are all disabled.
+`expires_at` is not editable through the API or through the admin: the only
+way is `renew`, which writes both a `Renewal` row and an audit entry
 (`test_put_cannot_rewrite_expiry_behind_the_log`).
-Окремо важливо: `actor` у журналі це справжнє ім'я користувача з токена.
-Журнал, який пише `anonymous`, відповідає на питання «що сталось», але не на
-питання «хто», а саме друге й потрібне
+One detail matters separately: `actor` in the log is the real username from
+the token. A log that records `anonymous` answers "what happened" but not
+"who did it", and the second question is the one that gets asked
 (`test_audit_log_records_the_real_username`).
 
-**7. Кількість запитів до бази не росте разом з даними.**
-Наївні нагадування робили `get_or_create` плюс запис події на кожну одиницю:
-51 запит на 10 одиниць, тобто близько 5 на штуку. На десяти тисячах ліцензій
-це десятки тисяч звернень за один запуск cron. Пакетна версія робить 6 запитів
-незалежно від обсягу, і це зафіксовано тестом, який порівнює 5 одиниць із 40:
-`test_reminders_query_count_does_not_grow_with_size`. Лічильник відкидає
-SAVEPOINT і RELEASE: їх кількість залежить від бекенда, а CI ганяє і SQLite,
-і Postgres, тому точне число мало сенс лише для справжніх запитів.
+**7. The number of database queries does not grow with the data.**
+Naive reminders called `get_or_create` and wrote an event per unit: 51
+queries for 10 units, about five each. On ten thousand licences that is tens
+of thousands of round trips per cron run. The batched version makes 4 queries
+regardless of size, pinned by a test that compares 5 units against 40:
+`test_reminders_query_count_does_not_grow_with_size`. The counter discards
+SAVEPOINT and RELEASE: their number depends on the backend, and CI runs both
+SQLite and Postgres, so an exact number only makes sense for real queries.
 
-**8. Одна оплата це рівно одна безкоштовна заміна.**
-Найдорожча помилка проєкту, і знайшлась вона тоді, коли 76 тестів уже були
-зелені. Сценарій: видача, рекламація, схвалення. Стара одиниця стає REVOKED,
-видача закривається, клієнт отримує заміну. Далі, поки гарантійне вікно ще
-відкрите, по тій самій закритій видачі відкривається друга рекламація. Перехід
-REVOKED у REVOKED це no-op, він мовчки проходить, і сервіс видає ще одну
-безкоштовну одиницю. Підсумок у грошах: одна оплата, дві безкоштовні заміни.
-Покриття рядків тут не допомогло б: кожен рядок окремо працював правильно.
-Видно це лише коли пройти сценарій цілком і подивитись на підсумок у грошах
-(`tests/test_fraud.py`).
-Закрито трьома перевірками в `open_claim` плюс частковим унікальним індексом
-на пару (видача, відкрита рекламація), тобто тим самим прийомом, що й у
-пункті 2: правило живе і в коді, і в базі.
+**8. One payment means exactly one free replacement.**
+The most expensive mistake in this project, and it surfaced only after 76
+tests were already green. Scenario: issue, claim, approve. The old unit
+becomes REVOKED, the issue closes, the client receives a replacement. Then,
+while the warranty window is still open, a second claim is filed against that
+same closed issue. Moving REVOKED to REVOKED is a no-op, it passes silently,
+and the service hands out another free unit. In money: one payment, two free
+replacements.
+Line coverage would not have helped: every line on its own behaved correctly.
+It is only visible when the scenario is walked end to end and the result is
+read in money (`tests/test_fraud.py`).
+Closed by three checks in `open_claim` plus a partial unique index on
+(issue, open claim), the same device as in point 2: the rule lives both in
+the code and in the database.
 
-**9. Стан AVAILABLE не означає «працює».**
-Він означає лише «нікому не видана». Одиницю можна продовжити, поки вона
-вільна, потім вона полежить і протухне, а стан лишиться AVAILABLE. Без
-окремої перевірки клієнт платить і отримує мертву ліцензію
-(`test_expired_unit_cannot_be_sold`). Строк, не заданий взагалі, означає
-«безстрокова», а не «протухла», і це теж під тестом.
+**9. The AVAILABLE state does not mean "works".**
+It only means "not issued to anyone". A unit can be renewed while free, then
+sit around and go stale, and its state stays AVAILABLE. Without a separate
+check the client pays and receives a dead licence
+(`test_expired_unit_cannot_be_sold`). No expiry at all means perpetual, not
+stale, and that is under test too.
 
-**10. Гроші цілими центами, час завжди aware.**
-`0.1 + 0.2 != 0.3` виїжджає саме на звірці з платіжкою. Наївний datetime дає
-мовчазний зсув на годину двічі на рік, рівно на межі гарантійного вікна.
+**10. Money in whole cents, datetimes always aware.**
+`0.1 + 0.2 != 0.3` surfaces exactly when reconciling against a payment
+provider. A naive datetime gives a silent one-hour shift twice a year, right
+on the edge of a warranty window.
 
-**11. Налаштування теж покриті тестами.**
-`DJANGO_ENV=production` без `DJANGO_SECRET_KEY` падає на старті, а не працює
-тихо з ключем із публічного репозиторію. На проді `check --deploy` чистий:
-нуль попереджень, а не «шість, ми знаємо». Локально ж секретів не треба,
-інакше обіцянка «запустити за хвилину» була б неправдою. Перевірити самому:
+**11. Settings are covered by tests as well.**
+`DJANGO_ENV=production` without `DJANGO_SECRET_KEY` fails at startup instead
+of quietly running with a key from a public repository. In production
+`check --deploy` is clean: zero warnings, not "six, we know about them".
+Locally no secrets are needed, otherwise the one-minute start would be a lie.
+Check it yourself:
 
 ```bash
 DJANGO_ENV=production DJANGO_SECRET_KEY=$(python -c "import secrets;print(secrets.token_urlsafe(50))") \
   python manage.py check --deploy --fail-level WARNING
 ```
 
-Там же важлива дрібниця: `check --deploy` віддає нуль навіть із шістьма
-попередженнями, тому без `--fail-level WARNING` такий тест був би декорацією.
+One subtlety there: `check --deploy` exits zero even with six warnings, so
+without `--fail-level WARNING` such a test would be decoration.
 
-**12. Власний ендпоінт логіна замість готового.**
-У DRF `ObtainAuthToken` оголошена з `throttle_classes = ()`. Для єдиного
-місця, куди стукають без токена і де перевіряється пароль, це найгірше місце
-для «без обмежень»: перебір виходить безкоштовним. Тут окремий scope з власним
-лімітом (`test_login_is_rate_limited`).
-Суміжна деталь, через яку легко написати тест-пустушку: порядок перевірок у
-DRF це автентифікація, права, throttle. Тому анонім на закритому ендпоінті
-отримує 401 ще до лічильника, і перевіряти обмеження треба саме на логіні.
+**12. A custom login endpoint instead of the ready-made one.**
+In DRF, `ObtainAuthToken` is declared with `throttle_classes = ()`. For the
+one place that is reachable without a token and that checks a password, that
+is the worst possible spot for "no limit": brute force becomes free. Here it
+has its own scope and its own budget (`test_login_is_rate_limited`).
+A neighbouring detail that makes it easy to write a hollow test: the order of
+checks in DRF is authentication, permissions, throttle. An anonymous request
+to a closed endpoint therefore gets a 401 before the counter ever runs, so
+the limit has to be exercised on the open login endpoint.
 
-## Про тести
+## About the tests
 
-99 штук. Дві історії звідти варті згадки, бо показують, як цей набір ловить
-помилки.
+99 of them, the suite runs in 3.5 s, coverage 98%.
 
-Три перевірки строків спочатку порівнювали результат із `timezone.now()` через
-`.days`. Поодинці вони зеленіли, на повному прогоні падали приблизно раз на
-три. Замінено на коридор між двома замірами часу навколо виклику. Плаваючий
-тест гірший за відсутній: він вчить ігнорувати червоне.
+The only uncovered lines are in `config/settings.py` and run under
+`DJANGO_ENV=production`: they are checked in `tests/test_settings.py`, but
+those tests spawn a separate process and coverage does not look into child
+processes. Putting a `pragma: no cover` there would hide the truth instead of
+explaining it.
 
-Покриття 98%. Непокритими лишаються лише рядки `config/settings.py`, які
-виконуються при `DJANGO_ENV=production`: вони перевірені в
-`tests/test_settings.py`, але ті піднімають окремий процес, а coverage у
-дочірні процеси не заглядає. Поставити там `pragma: no cover` означало б
-сховати правду замість того щоб її пояснити.
+Two stories from this suite are worth telling, because they show how it
+catches things.
 
-Числа в `test_scale.py` точні, а не «менше ніж». Якщо десь з'явиться зайвий
-запит до бази, тест має впасти, а не мовчки пропустити регресію. При цьому
-транзакційний шум із підрахунку прибраний: інакше точні числа були б
-правильні на SQLite і хибні на Postgres.
+Three expiry checks originally compared the result against `timezone.now()`
+through `.days`. On their own they passed; on a full run they failed roughly
+once in three. They were replaced with a corridor between two time readings
+taken around the call. A flaky test is worse than a missing one: it teaches
+you to ignore red.
 
-Набір іде 3.5 с. Спочатку йшов 22.4 с, і першим здогадом було, що винні три
-тести налаштувань: вони піднімають Django окремим процесом, бо налаштування
-читаються один раз при імпорті. Здогад виявився хибним, `--durations` показав
-інше: близько 0.57 с витрачалось у **setup** майже кожного тесту, бо створення
-користувача хеширує пароль через PBKDF2 із сотнями тисяч ітерацій. Стійкість
-хешу тут ніхто не перевіряє, тому в тестах найдешевший хешер, і 22.4 с стали
-3.5 с.
+The suite once took 22.4 s. The first guess was that the three subprocess
+tests were to blame. The guess was wrong: `--durations` showed about 0.57 s
+spent in the **setup** of nearly every test, because creating a user hashes a
+password with PBKDF2 and hundreds of thousands of iterations. Hash strength
+is not what these tests check, so they use the cheapest hasher, and 22.4 s
+became 3.5 s.
 
-Три підпроцесні тести все одно позначені `slow`, бо вони лишились найдорожчими:
-`pytest -m "not slow"` іде 1.0 с, у CI йде весь набір.
+The numbers in `test_scale.py` are exact, not "at most". If an extra query
+appears, the test has to fail rather than silently let the regression through.
 
-## Доступ
+## Access
 
-Усе закрито за замовчуванням, відкриті точки вмикають доступ явно: забути
-закрити легше, ніж забути відкрити.
+Everything is closed by default; the open endpoints opt in explicitly.
+Forgetting to close is easier than forgetting to open.
 
-| Хто | Що може |
+| Who | What they can do |
 |---|---|
-| анонім | лише `/healthz/` і отримання токена |
-| автентифікований | читати і виконувати всі дії |
-| персонал | додатково видаляти |
+| anonymous | only `/healthz/` and obtaining a token |
+| authenticated | read and perform every action |
+| staff | additionally delete |
 
-Видалення окремо тому, що це єдина дія, яку не рятує історія: все інше або
-оборотне, або лишає слід у журналі.
+Deletion is singled out because it is the one action history does not save:
+everything else is either reversible or leaves a trace in the audit log.
 
-`/healthz/` відкритий і без обмеження частоти свідомо: балансувальник не має
-токена і стукає туди щосекунди, а даних звідти не витікає. При цьому він
-робить `SELECT 1`: ендпоінт, який завжди відповідає «ok», вважає інстанс живим
-при мертвій базі.
+`/healthz/` is open and unthrottled on purpose: the load balancer has no
+token and hits it every second, and no data leaks from there. It does run
+`SELECT 1` though: an endpoint that always answers "ok" keeps an instance in
+rotation with a dead database behind it.
 
 ## API
 
-| Метод | Шлях | Що робить |
+| Method | Path | What it does |
 |---|---|---|
-| POST | `/api/auth/token/` | отримати токен за логіном і паролем |
-| GET | `/api/units/?state=available` | інвентар з фільтром за станом |
-| POST | `/api/units/` | завести одиницю |
-| POST | `/api/units/{ref}/renew/` | продовжити строк |
-| GET | `/api/units/expiring/?days=14` | у кого скоро спливає |
-| POST | `/api/issues/` | видати одиницю клієнту |
-| POST | `/api/issues/{id}/claim/` | відкрити рекламацію |
-| POST | `/api/claims/{id}/approve/` | задовольнити, видати заміну |
-| POST | `/api/claims/{id}/reject/` | відхилити |
-| GET | `/api/events/?unit_ref=UNIT-001` | журнал по одиниці |
-| GET | `/api/schema/`, `/api/docs/` | схема OpenAPI і Swagger UI |
-| GET | `/healthz/` | пульс, що перевіряє базу |
+| POST | `/api/auth/token/` | obtain a token with username and password |
+| GET | `/api/units/?state=available` | inventory filtered by state |
+| POST | `/api/units/` | register a unit |
+| POST | `/api/units/{ref}/renew/` | extend the term |
+| GET | `/api/units/expiring/?days=14` | whose term is running out |
+| POST | `/api/issues/` | issue a unit to a client |
+| POST | `/api/issues/{id}/claim/` | file a warranty claim |
+| POST | `/api/claims/{id}/approve/` | approve it, issue a replacement |
+| POST | `/api/claims/{id}/reject/` | reject it |
+| GET | `/api/events/?unit_ref=UNIT-001` | audit log for one unit |
+| GET | `/api/schema/`, `/api/docs/` | OpenAPI schema and Swagger UI |
+| GET | `/healthz/` | heartbeat that checks the database |
 
-Списки й `expiring` віддають однакову обгортку
-`{count, next, previous, results}`. Різна форма на сусідніх ендпоінтах
-змушує клієнта тримати дві гілки розбору, і одну з них рано чи пізно забувають.
+Lists and `expiring` return the same envelope
+`{count, next, previous, results}`. A different shape on two neighbouring
+endpoints forces the client to keep two parsing branches, and sooner or later
+one of them is forgotten.
 
-## Стани одиниці
+## Unit states
 
 ```
-available ──► reserved ──► issued ──► expired ──► issued (після продовження)
+available ──► reserved ──► issued ──► expired ──► issued (after renewal)
     │            │            │           │
-    └────────────┴────────────┴───────────┴──► revoked (термінальний)
+    └────────────┴────────────┴───────────┴──► revoked (terminal)
 ```
 
-Усе, чого немає в `ALLOWED_TRANSITIONS`, заборонено і падає з
-`IllegalTransition`. Правило лежить одним словником, а не розсіяне по if-ах.
+Anything absent from `ALLOWED_TRANSITIONS` is forbidden and raises
+`IllegalTransition`. The rule sits in one dictionary instead of being
+scattered across if-statements.
 
-Стан це не вся правда про одиницю: `available` плюс прострочений `expires_at`
-означає мертвий товар, і видати його не можна.
+The state is not the whole truth about a unit: `available` plus an expiry in
+the past means dead stock, and it cannot be issued.
 
-## Регулярні задачі
+## Scheduled jobs
 
 ```cron
 */15 * * * *  python manage.py sweep_expired
 0    9 * * *  python manage.py send_renewal_reminders --days 14
 ```
 
-Обидві ідемпотентні, тому перезапуск після збою нічого не дублює і не ламає.
-У кожної є `--dry-run`.
+Both are idempotent, so restarting after a failure duplicates nothing and
+breaks nothing. Each has a `--dry-run`.
 
-## Оточення
+## Environment
 
-| Змінна | Дефолт | Навіщо |
+| Variable | Default | Why |
 |---|---|---|
-| `DJANGO_ENV` | `local` | `production` вмикає HTTPS, HSTS, secure-cookies і вимагає ключ |
-| `DJANGO_SECRET_KEY` | дев-ключ локально | обов'язкова на проді, інакше падіння на старті |
-| `DJANGO_DEBUG` | `0` | на проді ігнорується |
+| `DJANGO_ENV` | `local` | `production` switches on HTTPS, HSTS, secure cookies and requires a key |
+| `DJANGO_SECRET_KEY` | dev key locally | mandatory in production, otherwise startup fails |
+| `DJANGO_DEBUG` | `0` | ignored in production |
 | `DJANGO_ALLOWED_HOSTS` | `localhost,127.0.0.1` | |
-| `POSTGRES_DB` | не задано | задано, йдемо в Postgres замість SQLite |
+| `POSTGRES_DB` | unset | set it and the app uses Postgres instead of SQLite |
 | `THROTTLE_ANON` | `20/min` | |
 | `THROTTLE_USER` | `600/min` | |
-| `THROTTLE_LOGIN` | `5/min` | окремо і жорсткіше: там перевіряється пароль |
+| `THROTTLE_LOGIN` | `5/min` | separate and stricter: a password is checked there |
 
-Читаються з оточення або з `.env` у корені. Змінні, вже задані в оточенні,
-мають пріоритет над файлом: інакше `.env` на диску тихо перебивав би те, що
-задав systemd або docker compose.
+They are read from the environment or from `.env` in the project root.
+Variables already set in the environment win over the file: otherwise a
+`.env` on disk would silently override what systemd or docker compose set.
 
 ## CI
 
-GitHub Actions на кожен пуш:
+GitHub Actions on every push:
 
-- `makemigrations --check`: міграції не розійшлись з моделями
+- `makemigrations --check`: migrations have not drifted from the models
 - `ruff check`
-- `pytest --cov`: покриття не нижче 97%
-- `check --deploy --fail-level WARNING` у режимі прода
-- `pytest` **двічі**: на SQLite і на Postgres
+- `check --deploy --fail-level WARNING` in production mode
+- `pytest --cov` **twice**: on SQLite and on Postgres, coverage at least 97%
 
-## Чого тут свідомо немає
+## What is deliberately absent
 
-Щоб не вдавати більше, ніж є:
+So as not to pretend to be more than it is:
 
-- **Ролей складніших за «персонал чи ні».** Для реального прода потрібні
-  групи й права на рівні об'єктів, це окрема робота.
-- **Реальної відправки листів.** `send_renewal_reminders` пише подію в журнал
-  замість виклику пошти або месенджера. Точка підключення одна.
-- **Обліку залишків і закупівель.** Собівартість зберігається, звітності по
-  марже немає.
-- **Асинхронної черги.** На цих обсягах cron або systemd-таймер чесніший за
-  Celery з брокером.
+- **Roles beyond "staff or not".** Real production needs groups and
+  object-level permissions; that is a separate piece of work.
+- **Actual message delivery.** `send_renewal_reminders` writes an audit event
+  instead of calling an email or messenger provider. There is exactly one
+  place to plug that in.
+- **Stock and purchasing.** Acquisition cost is stored, margin reporting is not.
+- **An async queue.** At this volume cron or a systemd timer is more honest
+  than Celery with a broker.
 
-## Ліцензія
+## Licence
 
 MIT.

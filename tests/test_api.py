@@ -1,4 +1,4 @@
-"""HTTP-шар: коди відповідей і форма даних."""
+"""The HTTP layer: status codes and the shape of the data."""
 
 import pytest
 
@@ -22,11 +22,11 @@ def test_issue_endpoint_creates_issue(api, make_unit, client_rec):
 
 @pytest.mark.django_db
 def test_double_issue_returns_409_not_500(api, make_unit, client_rec):
-    """Порушене бізнес-правило це конфлікт, а не поломка сервера.
+    """A violated business rule is a conflict, not a server failure.
 
-    500 сказав би клієнтському коду «спробуй ще раз», і він би довбав
-    ендпоінт. 409 однозначно каже «стан не той», і його видно в моніторингу
-    окремо від справжніх аварій.
+    A 500 tells the client code "try again" and it hammers the endpoint. A
+    409 says "wrong state" unambiguously, and in monitoring it stands apart
+    from real outages.
     """
     make_unit("A-2")
     payload = {"unit_ref": "A-2", "client_id": client_rec.id, "price_cents": 100}
@@ -106,11 +106,9 @@ def test_event_log_readable_per_unit(api, make_unit, client_rec):
 def test_claim_flow_over_http(api, make_unit, client_rec):
     make_unit("A-10")
     make_unit("A-10-R")
-    issue = services.issue_unit(
-        unit_ref="A-10", client_id=client_rec.id, price_cents=100
-    )
+    issue = services.issue_unit(unit_ref="A-10", client_id=client_rec.id, price_cents=100)
 
-    claim = api.post(f"/api/issues/{issue.id}/claim/", {"reason": "бан"}, format="json")
+    claim = api.post(f"/api/issues/{issue.id}/claim/", {"reason": "banned"}, format="json")
     assert claim.status_code == 201
 
     approved = api.post(

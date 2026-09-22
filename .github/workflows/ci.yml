@@ -15,11 +15,11 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements-dev.txt
-      - name: Міграції не розійшлись з моделями
+      - name: Migrations match the models
         run: python manage.py makemigrations --check --dry-run
-      - name: Лінт
+      - name: Lint
         run: ruff check .
-      - name: Чеклист прода має бути чистим
+      - name: Production checklist must be clean
         env:
           DJANGO_ENV: production
           DJANGO_SECRET_KEY: ${{ github.sha }}-ci-only-not-a-real-secret-value
@@ -30,9 +30,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # SQLite це дефолт репозиторію, Postgres це прод. На SQLite
-        # select_for_update не робить нічого, тому без другої гілки
-        # головна гарантія від гонок у CI не виконувалась би жодного разу.
+        # SQLite is the repository default, Postgres is production. On
+        # SQLite select_for_update does nothing, so without the second leg
+        # the main guarantee against races would never run in CI.
         database: [sqlite, postgres]
     services:
       postgres:
@@ -54,7 +54,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements-dev.txt
-      - name: Тести з покриттям
+      - name: Tests with coverage
         env:
           POSTGRES_DB: ${{ matrix.database == 'postgres' && 'licence_inventory' || '' }}
           POSTGRES_USER: postgres

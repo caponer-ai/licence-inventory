@@ -1,30 +1,27 @@
-"""Стани одиниці інвентаря і дозволені переходи між ними.
+"""Unit states and the transitions allowed between them.
 
-Тримаємо переходи окремо від моделей навмисно: правило «що в що можна
-перевести» читається одним поглядом і покривається тестом, а не розсіяне
-по в'юхах у вигляді if-ів.
+The transition table is kept separate from the models on purpose: the rule
+"what can turn into what" reads in one glance and is covered by a test,
+instead of being scattered across views as a pile of if-statements.
 """
 
 from django.db import models
 
 
 class UnitState(models.TextChoices):
-    AVAILABLE = "available", "вільна"
-    RESERVED = "reserved", "зарезервована"
-    ISSUED = "issued", "видана"
-    EXPIRED = "expired", "строк вийшов"
-    REVOKED = "revoked", "відкликана"
+    AVAILABLE = "available", "available"
+    RESERVED = "reserved", "reserved"
+    ISSUED = "issued", "issued"
+    EXPIRED = "expired", "expired"
+    REVOKED = "revoked", "revoked"
 
 
-#: Білий список переходів. Усе, чого тут немає, заборонено.
-#: REVOKED термінальний: відкликану одиницю не воскрешаємо, заводимо нову.
+#: Allow-list of transitions. Anything not listed here is forbidden.
+#: REVOKED is terminal: a revoked unit is never resurrected, a new one is
+#: registered instead.
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
-    UnitState.AVAILABLE: frozenset(
-        {UnitState.RESERVED, UnitState.ISSUED, UnitState.REVOKED}
-    ),
-    UnitState.RESERVED: frozenset(
-        {UnitState.AVAILABLE, UnitState.ISSUED, UnitState.REVOKED}
-    ),
+    UnitState.AVAILABLE: frozenset({UnitState.RESERVED, UnitState.ISSUED, UnitState.REVOKED}),
+    UnitState.RESERVED: frozenset({UnitState.AVAILABLE, UnitState.ISSUED, UnitState.REVOKED}),
     UnitState.ISSUED: frozenset({UnitState.EXPIRED, UnitState.REVOKED}),
     UnitState.EXPIRED: frozenset({UnitState.ISSUED, UnitState.REVOKED}),
     UnitState.REVOKED: frozenset(),
@@ -36,11 +33,11 @@ def can_move(current: str, target: str) -> bool:
 
 
 class ClaimState(models.TextChoices):
-    OPEN = "open", "відкрита"
-    APPROVED = "approved", "задоволена"
-    REJECTED = "rejected", "відхилена"
+    OPEN = "open", "open"
+    APPROVED = "approved", "approved"
+    REJECTED = "rejected", "rejected"
 
 
 class Tier(models.TextChoices):
-    INDIVIDUAL = "individual", "індивідуальна"
-    COMPANY = "company", "організаційна"
+    INDIVIDUAL = "individual", "individual"
+    COMPANY = "company", "company"

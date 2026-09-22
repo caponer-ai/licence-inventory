@@ -1,19 +1,19 @@
-"""Права доступу.
+"""Access rules.
 
-Один клас замість розсипу перевірок у в'юхах. Правило просте і його видно
-цілком: читати й працювати можуть усі автентифіковані, видаляти лише
-персонал.
+One class instead of scattered checks in views. The rule is simple and
+visible in full: any authenticated user can read and act, only staff can
+delete.
 
-Чому саме видалення окремо: усе інше в цьому сервісі оборотне або лишає
-слід у журналі. Видалення не лишає нічого, тому це єдина дія, де ціна
-помилки не покривається історією.
+Why deletion is singled out: everything else here is either reversible or
+leaves a trace in the audit log. A delete leaves nothing, so it is the one
+action whose cost is not covered by history.
 """
 
 from rest_framework.permissions import BasePermission
 
 
 class IsAdminForDestroy(BasePermission):
-    message = "видаляти може лише персонал"
+    message = "only staff may delete"
 
     def has_permission(self, request, view) -> bool:
         user = request.user

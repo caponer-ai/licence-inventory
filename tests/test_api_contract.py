@@ -1,11 +1,12 @@
-"""Контракт API: те, на що спирається клієнтський код.
+"""The API contract: what client code leans on.
 
-Файл існує окремо від `test_api.py` навмисно. Там перевіряється бізнес-шлях
-(видав, продовжив, замінив), тут форма і коди помилок. Зламати контракт
-легше, ніж логіку, і помічають це пізніше.
+This file is deliberately separate from `test_api.py`. That one walks the
+business path (issue, renew, replace); this one pins the shape and the
+error codes. A contract is easier to break than the logic, and the break is
+noticed later.
 
-Кожен тест нижче відповідає дефекту, який знайшовся при спробі зламати
-сервіс уже після того, як усі попередні тести були зелені.
+Every test below matches a defect found by trying to break the service
+after all the previous tests were already green.
 """
 
 import pytest
@@ -17,10 +18,10 @@ from inventory.states import UnitState
 
 @pytest.mark.django_db
 def test_delete_unit_with_history_returns_409_not_500(api_staff, make_unit, client_rec):
-    """Найгірший дефект першого раунду: ProtectedError летів назовні.
+    """The worst defect of the first round: ProtectedError escaped.
 
-    `on_delete=PROTECT` кидає `ProtectedError`, DRF його не знає, тому
-    клієнт отримував 500. Сервер при цьому працював абсолютно правильно.
+    `on_delete=PROTECT` raises `ProtectedError`, DRF does not know it, so
+    the client got a 500 while the server had behaved perfectly correctly.
     """
     make_unit("D-1")
     services.issue_unit(unit_ref="D-1", client_id=client_rec.id, price_cents=100)
@@ -44,18 +45,18 @@ def test_delete_client_with_history_returns_409(api_staff, make_unit, client_rec
 
 @pytest.mark.django_db
 def test_unit_without_history_can_be_deleted(api_staff, make_unit):
-    """Захист не має заважати нормальному випадку."""
+    """The guard must not get in the way of the normal case."""
     make_unit("D-3")
     assert api_staff.delete("/api/units/D-3/").status_code == 204
 
 
 @pytest.mark.django_db
 def test_put_cannot_rewrite_expiry_behind_the_log(api, make_unit):
-    """Другий дефект: звичайний PUT переписував строк дії.
+    """Second defect: a plain PUT rewrote the expiry date.
 
-    Дата мінялась, запису в Renewal не з'являлось, події в журналі теж.
-    Пояснити клієнту нову дату було б нічим. Тепер expires_at на читання,
-    єдиний шлях це `renew`.
+    The date changed, no Renewal row appeared, no audit entry either. There
+    would have been nothing left to explain the new date to the client. Now
+    expires_at is read-only and `renew` is the only way in.
     """
     unit = make_unit("D-4", state=UnitState.ISSUED, expires_in_days=10)
     before = unit.expires_at
@@ -98,11 +99,11 @@ def test_renew_still_works_and_leaves_a_trail(api, make_unit):
 
 @pytest.mark.django_db
 def test_list_and_expiring_share_the_same_envelope(api, make_unit):
-    """Третій дефект: сусідні ендпоінти віддавали різну форму.
+    """Third defect: neighbouring endpoints returned different shapes.
 
-    `/units/` давав {count, next, previous, results}, а `/units/expiring/`
-    голий список. Клієнт мусив би тримати дві гілки розбору, і одну з них
-    рано чи пізно забувають.
+    `/units/` gave {count, next, previous, results} and `/units/expiring/`
+    a bare list. The client would have to keep two parsing branches, and
+    sooner or later one of them is forgotten.
     """
     make_unit("D-7", state=UnitState.ISSUED, expires_in_days=3)
 
@@ -121,9 +122,10 @@ def test_expiring_rejects_garbage_days(api):
 
 @pytest.mark.django_db
 def test_healthz_reports_database(api):
-    """Четвертий дефект: пульс відповідав ok, не торкаючись бази.
+    """Fourth defect: the heartbeat answered ok without touching the database.
 
-    Балансувальник вважав би інстанс живим при мертвій базі.
+    A load balancer would have kept the instance in rotation with a dead
+    database behind it.
     """
     response = api.get("/healthz/")
     assert response.status_code == 200
@@ -132,7 +134,7 @@ def test_healthz_reports_database(api):
 
 @pytest.mark.django_db
 def test_unknown_unit_returns_404_through_global_handler(api, client_rec):
-    """try/except прибрані з в'юх, тому перевіряємо, що обробник їх замінив."""
+    """try/except is gone from the views, so we check the handler replaced it."""
     response = api.post(
         "/api/issues/",
         {"unit_ref": "NOPE", "client_id": client_rec.id, "price_cents": 100},

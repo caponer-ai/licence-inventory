@@ -1,13 +1,13 @@
-"""Кількість запитів до бази не має рости разом з даними.
+"""The number of database queries must not grow with the data.
 
-Третій раунд критики: наївні нагадування робили близько п'яти запитів на
-одиницю. На десяти одиницях це 51 запит і ніхто не помічає. На десяти
-тисячах ліцензій це вже десятки тисяч звернень за один запуск cron, і
-помічає це прод, а не тест.
+Naive reminders made about five queries per unit. On ten units that is 51
+queries and nobody notices. On ten thousand licences it is tens of
+thousands of round trips per cron run, and production notices instead of
+the test suite.
 
-Тому тут перевіряється не швидкість (вона залежить від машини), а форма
-залежності: скільки запитів на 5 одиниць і скільки на 40. Якщо числа
-збігаються, залежності від обсягу немає.
+So what is checked here is not speed (that depends on the machine) but the
+shape of the dependency: how many queries for 5 units and how many for 40.
+If the numbers match, there is no dependency on volume.
 """
 
 from datetime import timedelta
@@ -21,29 +21,26 @@ from inventory import services
 from inventory.models import Event, ReminderLog, Unit
 from inventory.states import UnitState
 
-#: Точні числа, а не «менше ніж». Якщо десь з'явиться зайвий запит до
-#: бази, тест має впасти, а не мовчки пропустити регресію.
+#: Exact numbers, not "at most". If an extra query appears, the test has to
+#: fail rather than silently let the regression through.
 EXPECTED_REMIND = 4
 EXPECTED_REMIND_REPEAT = 2
 EXPECTED_SWEEP = 3
 
-#: Керування транзакцією не рахуємо. Django обгортає кожен тест у
-#: транзакцію, і кількість SAVEPOINT/RELEASE залежить від бекенда, тому
-#: точні числа з ними були б правильні на SQLite і хибні на Postgres.
-#: CI ганяє обидві бази, тож тест має бути незалежним від бекенда.
+#: Transaction control is not counted. Django wraps every test in a
+#: transaction, and the number of SAVEPOINT/RELEASE statements depends on
+#: the backend, so exact numbers including them would be right on SQLite
+#: and wrong on Postgres. CI runs both, so the test has to be backend
+#: independent.
 TRANSACTION_NOISE = ("SAVEPOINT", "RELEASE", "ROLLBACK", "BEGIN", "COMMIT")
 
 
 def real_queries(captured) -> list[str]:
-    return [
-        q["sql"]
-        for q in captured
-        if not q["sql"].upper().lstrip().startswith(TRANSACTION_NOISE)
-    ]
+    return [q["sql"] for q in captured if not q["sql"].upper().lstrip().startswith(TRANSACTION_NOISE)]
 
 
 class count_queries(CaptureQueriesContext):
-    """Лічильник запитів без транзакційного шуму."""
+    """A query counter without the transaction noise."""
 
     def __init__(self):
         super().__init__(connection)
@@ -79,7 +76,7 @@ def test_reminders_query_count_does_not_grow_with_size():
 
 @pytest.mark.django_db
 def test_second_run_costs_almost_nothing():
-    """Повторний запуск cron не має платити за вже надіслане."""
+    """A repeat cron run must not pay for what was already sent."""
     make_many("AG", 20, days=3)
     services.send_renewal_reminders(days=14)
 
@@ -99,10 +96,11 @@ def test_sweep_query_count_does_not_grow_with_size():
 
 @pytest.mark.django_db
 def test_sweep_writes_one_event_per_unit():
-    """Страховка для пакетного підмітання.
+    """The safety net for the batched sweep.
 
-    ``sweep_expired`` єдине місце, де стан міняється повз ``move_state``.
-    Інваріант «кожна зміна стану лишає слід» тримається цим тестом.
+    ``sweep_expired`` is the only place where state changes bypass
+    ``move_state``. The invariant "every state change leaves a trace" is
+    held by this test.
     """
     make_many("EV", 7, days=-1)
 
@@ -116,7 +114,7 @@ def test_sweep_writes_one_event_per_unit():
 
 @pytest.mark.django_db
 def test_bulk_reminders_stay_idempotent_across_many_units():
-    """Пакетна версія не має загубити головну властивість наївної."""
+    """The batched version must not lose the main property of the naive one."""
     make_many("ID", 25, days=5)
 
     first = services.send_renewal_reminders(days=14)

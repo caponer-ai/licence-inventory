@@ -1,11 +1,11 @@
-"""Налаштування теж мають бути перевірені.
+"""Settings deserve tests too.
 
-Ці два тести ловлять клас помилок, який інакше виявляється тільки на
-проді: проєкт піднявся, але з дефолтним секретом або без HTTPS.
+These catch a class of mistake that otherwise only shows up in production:
+the app came up, but with a default secret or without HTTPS.
 
-Запускаємо окремим процесом навмисно: налаштування читаються один раз при
-імпорті, тому підмінити оточення всередині вже запущеного процесу не можна
-без брудних перезавантажень модуля.
+They run in a separate process on purpose: settings are read once at import
+time, so the environment cannot be swapped inside a running process without
+dirty module reloads.
 """
 
 import secrets
@@ -42,13 +42,13 @@ def test_production_without_secret_key_refuses_to_start():
 
 @pytest.mark.slow
 def test_production_with_secret_key_passes_deploy_checklist():
-    """`check --deploy` має бути чистим, а не «шість попереджень, ми знаємо».
+    """`check --deploy` has to be clean, not "six warnings, we know".
 
-    ``--fail-level WARNING`` обов'язковий: без нього ``check`` віддає нуль
-    навіть із шістьма попередженнями, і тест був би декорацією.
+    ``--fail-level WARNING`` is essential: without it ``check`` exits zero
+    even with six warnings and the test would be decoration.
 
-    Ключ генеруємо, а не беремо "x" * 60: Django окремо лається на
-    ключ із менш ніж п’ятьма різними символами (W009).
+    The key is generated rather than "x" * 60, because Django complains
+    separately about a key with fewer than five distinct characters (W009).
     """
     result = run_manage(
         ["check", "--deploy", "--fail-level", "WARNING"],
@@ -65,6 +65,6 @@ def test_production_with_secret_key_passes_deploy_checklist():
 
 @pytest.mark.slow
 def test_local_run_needs_no_secrets():
-    """README обіцяє запуск однією командою. Перевіряємо, що не збрехали."""
+    """The README promises a one-command start. Check that it is not a lie."""
     result = run_manage(["check"], {"DJANGO_ENV": "local", "DJANGO_SECRET_KEY": ""})
     assert result.returncode == 0, result.stdout + result.stderr

@@ -1,13 +1,13 @@
-# Кожен рядок нижче або роздуває образ, або тягне в нього те,
-# чого там не має бути.
+# Every line below either bloats the image or drags into it something that
+# does not belong there.
 
 .venv/
 venv/
 __pycache__/
 *.py[cod]
 
-# У базі розробки лежать демо-дані і токен demo-користувача.
-# У шарі образу вони лишились би назавжди.
+# The development database holds demo data and the demo user's token.
+# Inside an image layer they would stay forever.
 db.sqlite3
 *.sqlite3
 .env

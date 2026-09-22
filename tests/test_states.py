@@ -1,4 +1,4 @@
-"""Білий список переходів станів."""
+"""The transition allow-list."""
 
 import pytest
 
@@ -34,7 +34,7 @@ def test_illegal_transition_raises(make_unit):
 
 @pytest.mark.django_db
 def test_same_state_is_noop_and_not_logged(make_unit):
-    """Повторний виклик не має засмічувати журнал фальшивою подією."""
+    """Calling it again must not litter the log with a fake event."""
     from inventory.models import Event
 
     unit = make_unit("T-2", state=UnitState.AVAILABLE)

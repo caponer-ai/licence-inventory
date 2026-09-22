@@ -1,13 +1,13 @@
-"""Видача токена з обмеженням частоти.
+"""Token issuance with a rate limit.
 
-Навіщо власна в'юха замість готової ``ObtainAuthToken``: у DRF вона
-оголошена як ``throttle_classes = ()``, тобто лічильник запитів на ній
-вимкнено. Для єдиного ендпоінта, куди можна стукати без токена і де
-перевіряється пароль, це найгірше місце для «без обмежень»: перебір
-виходить безкоштовним.
+Why a custom view instead of the ready-made ``ObtainAuthToken``: in DRF it
+is declared with ``throttle_classes = ()``, so the request counter is
+switched off. For the one endpoint that can be hit without a token and that
+checks a password, "no limit" is the worst possible default: brute force
+becomes free.
 
-Окремий scope, а не загальний ``anon``: логін має бути жорсткішим за
-звичайне читання, і його ліміт треба крутити незалежно.
+It gets its own scope rather than sharing ``anon``, because login should be
+stricter than ordinary reads and its limit must be tunable on its own.
 """
 
 from drf_spectacular.utils import extend_schema
@@ -20,8 +20,8 @@ class LoginThrottle(ScopedRateThrottle):
 
 
 @extend_schema(
-    summary="Отримати токен за логіном і паролем",
-    description="Обмежено за частотою: підбір пароля коштує часу.",
+    summary="Obtain a token with username and password",
+    description="Rate limited: guessing a password costs time.",
 )
 class ThrottledObtainAuthToken(ObtainAuthToken):
     throttle_classes = [LoginThrottle]
