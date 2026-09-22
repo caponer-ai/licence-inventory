@@ -78,8 +78,12 @@ jobs:
         # A skipped test is a green test. This asserts the concurrency file
         # actually ran here, which is the only place it can: SQLite has no
         # row-level locking, so the same tests are skipped on the other leg.
+        # No extra -q here: pytest.ini already passes one, and a second -q
+        # suppresses the summary line the grep below looks for. The tests
+        # passed and the check still failed, which is its own small lesson
+        # about asserting on output you have not actually looked at.
         run: |
-          pytest tests/test_concurrency.py --no-cov -q | tee /tmp/conc.txt
+          pytest tests/test_concurrency.py --no-cov | tee /tmp/conc.txt
           grep -q "3 passed" /tmp/conc.txt
 
   docker:
