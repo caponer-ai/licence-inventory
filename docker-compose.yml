@@ -25,6 +25,9 @@ services:
         condition: service_healthy
     environment:
       DJANGO_ENV: local
+      # Відрізняється від .env.example навмисно: там дефолт 0, бо файл
+      # копіюють і на прод, а тут compose підіймає саме середовище
+      # розробки, де потрібні сторінки помилок Django.
       DJANGO_DEBUG: "1"
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
       POSTGRES_DB: licence_inventory
