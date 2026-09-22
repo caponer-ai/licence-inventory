@@ -1,0 +1,94 @@
+"""Гарантійне вікно і рекламації."""
+
+from datetime import timedelta
+
+import pytest
+from django.utils import timezone
+
+from inventory import services
+from inventory.models import Issue, WarrantyClaim
+from inventory.states import ClaimState, UnitState
+
+
+@pytest.mark.django_db
+def test_claim_accepted_inside_window(make_unit, client_rec):
+    make_unit("W-1")
+    issue = services.issue_unit(
+        unit_ref="W-1", client_id=client_rec.id, price_cents=100, warranty_days=7
+    )
+    claim = services.open_claim(issue_id=issue.id, reason="не працює")
+    assert claim.state == ClaimState.OPEN
+
+
+@pytest.mark.django_db
+def test_claim_rejected_outside_window(make_unit, client_rec):
+    """Межа вікна перевіряється, а не декларується.
+
+    Зсуваємо warranty_until у минуле замість того щоб чекати сім днів.
+    """
+    make_unit("W-2")
+    issue = services.issue_unit(
+        unit_ref="W-2", client_id=client_rec.id, price_cents=100
+    )
+    issue.warranty_until = timezone.now() - timedelta(seconds=1)
+    issue.save(update_fields=["warranty_until"])
+
+    with pytest.raises(services.WarrantyExpired):
+        services.open_claim(issue_id=issue.id, reason="пізно")
+
+
+@pytest.mark.django_db
+def test_approved_claim_revokes_old_and_issues_replacement(make_unit, client_rec):
+    make_unit("W-3")
+    make_unit("W-3-REPL")
+    issue = services.issue_unit(
+        unit_ref="W-3", client_id=client_rec.id, price_cents=35000
+    )
+    claim = services.open_claim(issue_id=issue.id, reason="забанено")
+
+    new_issue = services.approve_claim(claim_id=claim.id, replacement_ref="W-3-REPL")
+
+    issue.refresh_from_db()
+    claim.refresh_from_db()
+
+    assert issue.is_active is False
+    assert issue.closed_at is not None
+    assert issue.unit.state == UnitState.REVOKED
+    assert claim.state == ClaimState.APPROVED
+    assert claim.replacement_unit.ref == "W-3-REPL"
+    # Заміна тому самому клієнту і безкоштовно.
+    assert new_issue.client_id == client_rec.id
+    assert new_issue.price_cents == 0
+    # Історія лишається повною: стара видача не зникла.
+    assert Issue.objects.filter(unit__ref="W-3").count() == 1
+
+
+@pytest.mark.django_db
+def test_claim_cannot_be_resolved_twice(make_unit, client_rec):
+    make_unit("W-4")
+    make_unit("W-4-A")
+    make_unit("W-4-B")
+    issue = services.issue_unit(
+        unit_ref="W-4", client_id=client_rec.id, price_cents=100
+    )
+    claim = services.open_claim(issue_id=issue.id, reason="x")
+    services.approve_claim(claim_id=claim.id, replacement_ref="W-4-A")
+
+    with pytest.raises(services.DomainError):
+        services.approve_claim(claim_id=claim.id, replacement_ref="W-4-B")
+
+
+@pytest.mark.django_db
+def test_rejected_claim_leaves_unit_issued(make_unit, client_rec):
+    make_unit("W-5")
+    issue = services.issue_unit(
+        unit_ref="W-5", client_id=client_rec.id, price_cents=100
+    )
+    claim = services.open_claim(issue_id=issue.id, reason="перевіримо")
+
+    services.reject_claim(claim_id=claim.id)
+
+    issue.refresh_from_db()
+    assert WarrantyClaim.objects.get(pk=claim.id).state == ClaimState.REJECTED
+    assert issue.is_active is True
+    assert issue.unit.state == UnitState.ISSUED
