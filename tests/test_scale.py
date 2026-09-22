@@ -13,18 +13,44 @@
 from datetime import timedelta
 
 import pytest
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from inventory import services
 from inventory.models import Event, ReminderLog, Unit
 from inventory.states import UnitState
 
-#: Точні числа, а не «менше ніж». Якщо десь з'явиться зайвий запит,
-#: тест має впасти, а не мовчки пропустити регресію.
-#: У кожне входять SAVEPOINT і RELEASE від вкладеної транзакції тесту.
-EXPECTED_REMIND = 6
-EXPECTED_REMIND_REPEAT = 4
-EXPECTED_SWEEP = 5
+#: Точні числа, а не «менше ніж». Якщо десь з'явиться зайвий запит до
+#: бази, тест має впасти, а не мовчки пропустити регресію.
+EXPECTED_REMIND = 4
+EXPECTED_REMIND_REPEAT = 2
+EXPECTED_SWEEP = 3
+
+#: Керування транзакцією не рахуємо. Django обгортає кожен тест у
+#: транзакцію, і кількість SAVEPOINT/RELEASE залежить від бекенда, тому
+#: точні числа з ними були б правильні на SQLite і хибні на Postgres.
+#: CI ганяє обидві бази, тож тест має бути незалежним від бекенда.
+TRANSACTION_NOISE = ("SAVEPOINT", "RELEASE", "ROLLBACK", "BEGIN", "COMMIT")
+
+
+def real_queries(captured) -> list[str]:
+    return [
+        q["sql"]
+        for q in captured
+        if not q["sql"].upper().lstrip().startswith(TRANSACTION_NOISE)
+    ]
+
+
+class count_queries(CaptureQueriesContext):
+    """Лічильник запитів без транзакційного шуму."""
+
+    def __init__(self):
+        super().__init__(connection)
+
+    @property
+    def real(self) -> list[str]:
+        return real_queries(self.captured_queries)
 
 
 def make_many(prefix: str, count: int, *, days: int, state=UnitState.ISSUED):
@@ -35,37 +61,40 @@ def make_many(prefix: str, count: int, *, days: int, state=UnitState.ISSUED):
 
 
 @pytest.mark.django_db
-def test_reminders_query_count_does_not_grow_with_size(django_assert_num_queries):
+def test_reminders_query_count_does_not_grow_with_size():
     make_many("SM", 5, days=3)
-    with django_assert_num_queries(EXPECTED_REMIND) as small:
+    with count_queries() as small:
         services.send_renewal_reminders(days=14)
 
     Unit.objects.all().delete()
     ReminderLog.objects.all().delete()
 
     make_many("BIG", 40, days=3)
-    with django_assert_num_queries(EXPECTED_REMIND) as big:
+    with count_queries() as big:
         services.send_renewal_reminders(days=14)
 
-    assert len(small.captured_queries) == len(big.captured_queries)
+    assert len(small.real) == EXPECTED_REMIND, small.real
+    assert len(big.real) == EXPECTED_REMIND, big.real
 
 
 @pytest.mark.django_db
-def test_second_run_costs_almost_nothing(django_assert_num_queries):
+def test_second_run_costs_almost_nothing():
     """Повторний запуск cron не має платити за вже надіслане."""
     make_many("AG", 20, days=3)
     services.send_renewal_reminders(days=14)
 
-    with django_assert_num_queries(EXPECTED_REMIND_REPEAT):
+    with count_queries() as repeat:
         assert services.send_renewal_reminders(days=14) == []
+    assert len(repeat.real) == EXPECTED_REMIND_REPEAT, repeat.real
 
 
 @pytest.mark.django_db
-def test_sweep_query_count_does_not_grow_with_size(django_assert_num_queries):
+def test_sweep_query_count_does_not_grow_with_size():
     make_many("SW", 30, days=-1)
-    with django_assert_num_queries(EXPECTED_SWEEP):
+    with count_queries() as swept:
         moved = services.sweep_expired()
     assert moved == 30
+    assert len(swept.real) == EXPECTED_SWEEP, swept.real
 
 
 @pytest.mark.django_db
