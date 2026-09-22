@@ -56,8 +56,11 @@ def test_put_cannot_rewrite_expiry_behind_the_log(api, make_unit):
     """Second defect: a plain PUT rewrote the expiry date.
 
     The date changed, no Renewal row appeared, no audit entry either. There
-    would have been nothing left to explain the new date to the client. Now
-    expires_at is read-only and `renew` is the only way in.
+    would have been nothing left to explain the new date to the client.
+
+    The refusal is explicit rather than silent. Dropping the field quietly
+    would leave the caller believing the change landed; a 400 tells them
+    which action to use instead.
     """
     unit = make_unit("D-4", state=UnitState.ISSUED, expires_in_days=10)
     before = unit.expires_at
@@ -69,7 +72,8 @@ def test_put_cannot_rewrite_expiry_behind_the_log(api, make_unit):
     )
 
     unit.refresh_from_db()
-    assert response.status_code == 200
+    assert response.status_code == 400
+    assert "renew" in str(response.data)
     assert unit.expires_at == before
     assert unit.renewals.count() == 0
 
@@ -203,3 +207,55 @@ def test_schema_documents_the_real_request_body(api):
     body = schema["paths"]["/api/issues/"]["post"]["requestBody"]
     ref = body["content"]["application/json"]["schema"]["$ref"]
     assert ref.endswith("IssueCreate"), ref
+
+
+@pytest.mark.django_db
+def test_expiry_can_be_set_when_registering_a_unit(api):
+    """A licence bought with a known end date has to be enterable.
+
+    Before this the only way to get an expiry was a renewal counted in whole
+    days from now, which cannot express "this one ends on the 14th".
+    """
+    response = api.post(
+        "/api/units/",
+        {"ref": "REG-1", "tier": "company", "expires_at": "2030-01-01T00:00:00Z"},
+        format="json",
+    )
+
+    assert response.status_code == 201
+    assert Unit.objects.get(ref="REG-1").expires_at.year == 2030
+
+
+@pytest.mark.django_db
+def test_unroutable_ref_is_refused(api):
+    """The ref is the URL lookup, so it has to be addressable.
+
+    A unit named "expiring" would collide with the list action, and one with
+    a dot or a slash could not be addressed at all.
+    """
+    for bad in ("has.dot", "has/slash", "expiring"):
+        response = api.post("/api/units/", {"ref": bad}, format="json")
+        assert response.status_code == 400, bad
+    assert api.post("/api/units/", {"ref": "UNIT-042"}, format="json").status_code == 201
+
+
+@pytest.mark.django_db
+def test_reserved_refs_match_the_router(api):
+    """A new list action must not silently become a valid unit ref.
+
+    The reserved name lives in a validator on the model while the action
+    lives on the viewset. This test is the thing that keeps the two from
+    drifting apart: add an action, forget the validator, and it fails.
+    """
+    from inventory.views import UnitViewSet
+
+    list_actions = [
+        getattr(UnitViewSet, name).url_path
+        for name in dir(UnitViewSet)
+        if getattr(getattr(UnitViewSet, name, None), "detail", None) is False
+    ]
+    assert list_actions, "no list actions found; the check below would be vacuous"
+
+    for name in list_actions:
+        response = api.post("/api/units/", {"ref": name}, format="json")
+        assert response.status_code == 400, f"{name} is routable but accepted as a ref"

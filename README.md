@@ -51,7 +51,7 @@ inventory/
   views.py        a thin HTTP layer with no try/except
   auth_views.py   token issuance with a rate limit
   management/commands/   reminders, expiry sweep, demo data
-tests/            107 tests, 3 of them Postgres-only
+tests/            113 tests, 3 of them Postgres-only
 ```
 
 Business logic lives in `services.py`, not in the views, so it is reachable
@@ -143,7 +143,8 @@ separately. A shared cache backend makes the limit global.
 
 ## Tests
 
-107, three of them Postgres-only, suite in about 6 s, coverage 98%.
+113 tests. Three need row-level locking and are skipped without Postgres, so
+a local run reports 110 passed and 3 skipped. About 7 s, coverage 98%.
 
 `tests/test_concurrency.py` runs real threads on separate connections and is
 skipped on SQLite, which has no row-level locking and would only measure the
@@ -228,7 +229,7 @@ nothing noticed.
 - Actual message delivery: `send_renewal_reminders` writes an audit event
   instead of calling a provider. One place to plug that in.
 - A payment entity. Prices are stored in cents on issues and renewals, in a
-  single unnamed currency.
+  single unnamed currency: the system is single-currency by construction.
 - Stock and purchasing, and margin reporting.
 - An async queue. At this volume cron is more honest than Celery.
 - Static file serving in the container: `/admin/` under gunicorn has no CSS

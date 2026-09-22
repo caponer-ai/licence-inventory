@@ -8,7 +8,7 @@ All datetimes are timezone aware (USE_TZ=True). A naive datetime compared
 against an expiry gives a silent one-hour shift twice a year.
 """
 
-from django.core.validators import MinValueValidator
+from django.core.validators import MinValueValidator, RegexValidator
 from django.db import models
 
 from .states import ClaimState, Tier, UnitState
@@ -40,19 +40,35 @@ class Unit(TimeStamped):
     issue may end earlier; the expiry stays a property of the unit.
     """
 
-    ref = models.CharField(max_length=64, unique=True, help_text="external identifier")
+    # The ref is the URL lookup for detail routes, so it has to be routable
+    # and it must not collide with a list action. Without this a unit could
+    # be registered as "expiring" and shadow /api/units/expiring/, or carry
+    # a dot or a slash and have no addressable detail URL at all.
+    # RESERVED_REFS is kept in sync by test_reserved_refs_match_the_router.
+    ref = models.CharField(
+        max_length=64,
+        unique=True,
+        help_text="external identifier, used in URLs",
+        validators=[
+            RegexValidator(
+                r"^(?!expiring$)[A-Za-z0-9_-]+$",
+                "letters, digits, hyphen and underscore only, and not a reserved route name",
+            )
+        ],
+    )
     tier = models.CharField(max_length=16, choices=Tier.choices, default=Tier.INDIVIDUAL)
+    # No db_index here and none on expires_at: the composite index below
+    # covers a filter on state through its left prefix, and nothing in the
+    # code queries expires_at on its own. Two indexes that are never used
+    # still cost every write.
     state = models.CharField(
-        max_length=16,
-        choices=UnitState.choices,
-        default=UnitState.AVAILABLE,
-        db_index=True,
+        max_length=16, choices=UnitState.choices, default=UnitState.AVAILABLE
     )
     cost_cents = models.PositiveIntegerField(
         default=0, help_text="acquisition cost in cents", validators=[MinValueValidator(0)]
     )
     acquired_at = models.DateTimeField(null=True, blank=True)
-    expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
     note = models.TextField(blank=True)
 
     class Meta:

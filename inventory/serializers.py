@@ -25,12 +25,26 @@ class UnitSerializer(serializers.ModelSerializer):
             "expires_at",
             "note",
         ]
-        # expires_at changes only through `renew`, so that every new date
-        # has a Renewal row and an entry in the audit log behind it.
-        read_only_fields = ["state", "expires_at"]
+        read_only_fields = ["state"]
+
+    def validate(self, attrs):
+        """The expiry can be set once, when the unit is registered.
+
+        A licence bought with a known end date has to be enterable, and
+        before this it was not: the only way to get an expiry was a renewal
+        counted in whole days from now. After registration the date changes
+        only through `renew`, so every later change has a Renewal row and an
+        audit entry behind it.
+        """
+        if self.instance is not None and "expires_at" in attrs:
+            raise serializers.ValidationError(
+                {"expires_at": "set at registration; afterwards use the renew action"}
+            )
+        return attrs
 
     #: The fields a plain update is allowed to touch. Everything else about a
-    #: unit changes through a domain operation.
+    #: unit changes through a domain operation. Note that `expires_at` is
+    #: absent: it is accepted on create and never on update.
     WRITABLE = ("ref", "tier", "cost_cents", "acquired_at", "note")
 
     def update(self, instance, validated_data):
@@ -80,13 +94,15 @@ class IssueCreateSerializer(serializers.Serializer):
 
     unit_ref = serializers.CharField(max_length=64)
     client_id = serializers.IntegerField(min_value=1)
-    price_cents = serializers.IntegerField(min_value=0)
+    # The upper bound matches PositiveIntegerField on the model: without it
+    # a large value passed validation and then failed at the database.
+    price_cents = serializers.IntegerField(min_value=0, max_value=2_147_483_647)
     warranty_days = serializers.IntegerField(min_value=0, max_value=365, default=7)
 
 
 class RenewSerializer(serializers.Serializer):
     period_days = serializers.IntegerField(min_value=1, max_value=3650)
-    price_cents = serializers.IntegerField(min_value=0)
+    price_cents = serializers.IntegerField(min_value=0, max_value=2_147_483_647)
 
 
 class ClaimCreateSerializer(serializers.Serializer):

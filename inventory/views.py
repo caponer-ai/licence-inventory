@@ -213,7 +213,7 @@ def healthz(request: Request) -> Response:
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1")
             cursor.fetchone()
-    except Exception as exc:  # noqa: BLE001 - details never leave the server
+    except Exception as exc:  # broad on purpose: details never leave the server
         return Response(
             {"status": "error", "database": type(exc).__name__},
             status=status.HTTP_503_SERVICE_UNAVAILABLE,

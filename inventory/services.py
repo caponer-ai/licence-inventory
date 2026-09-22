@@ -8,8 +8,6 @@ Every function that changes state does so inside one transaction and writes
 an event to the audit log. There is no path that changes state silently.
 """
 
-from __future__ import annotations
-
 from datetime import datetime, timedelta
 
 from django.db import transaction
