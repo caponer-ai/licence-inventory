@@ -8,9 +8,11 @@ python manage.py runserver
 
 from datetime import timedelta
 
+from django.contrib.auth.models import User
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
+from rest_framework.authtoken.models import Token
 
 from inventory import services
 from inventory.models import Client, Unit
@@ -25,6 +27,16 @@ class Command(BaseCommand):
         if Unit.objects.exists():
             self.stdout.write(self.style.WARNING("база не порожня, демо не заливаю"))
             return
+
+        # Без користувача і токена README обіцяв би запуск за хвилину,
+        # а перший же curl повертав би 401.
+        demo, created = User.objects.get_or_create(
+            username="demo", defaults={"is_staff": True}
+        )
+        if created:
+            demo.set_password("demo")
+            demo.save()
+        token, _ = Token.objects.get_or_create(user=demo)
 
         acme = Client.objects.create(name="ТОВ Акме", contact="@acme")
         beta = Client.objects.create(name="Beta Studio", contact="beta@example.com")
@@ -68,4 +80,10 @@ class Command(BaseCommand):
                 f"видач 3, прострочених підмічено {moved}, "
                 f"вільних {Unit.objects.filter(state=UnitState.AVAILABLE).count()}"
             )
+        )
+        self.stdout.write("")
+        self.stdout.write(f"користувач demo / demo, токен: {token.key}")
+        self.stdout.write("спробувати одразу:")
+        self.stdout.write(
+            f'  curl -H "Authorization: Token {token.key}" http://localhost:8000/api/units/'
         )

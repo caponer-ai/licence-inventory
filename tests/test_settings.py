@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -31,12 +33,14 @@ def run_manage(args: list[str], env_extra: dict[str, str]):
     )
 
 
+@pytest.mark.slow
 def test_production_without_secret_key_refuses_to_start():
     result = run_manage(["check"], {"DJANGO_ENV": "production", "DJANGO_SECRET_KEY": ""})
     assert result.returncode != 0
     assert "DJANGO_SECRET_KEY" in result.stdout + result.stderr
 
 
+@pytest.mark.slow
 def test_production_with_secret_key_passes_deploy_checklist():
     """`check --deploy` має бути чистим, а не «шість попереджень, ми знаємо».
 
@@ -59,6 +63,7 @@ def test_production_with_secret_key_passes_deploy_checklist():
     assert "no issues" in output.lower(), output
 
 
+@pytest.mark.slow
 def test_local_run_needs_no_secrets():
     """README обіцяє запуск однією командою. Перевіряємо, що не збрехали."""
     result = run_manage(["check"], {"DJANGO_ENV": "local", "DJANGO_SECRET_KEY": ""})

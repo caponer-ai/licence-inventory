@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,9 +15,50 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements-dev.txt
-      - name: Міграції не розходяться з моделями
+      - name: Міграції не розійшлись з моделями
         run: python manage.py makemigrations --check --dry-run
       - name: Лінт
         run: ruff check .
+      - name: Чеклист прода має бути чистим
+        env:
+          DJANGO_ENV: production
+          DJANGO_SECRET_KEY: ${{ github.sha }}-ci-only-not-a-real-secret-value
+        run: python manage.py check --deploy --fail-level WARNING
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # SQLite це дефолт репозиторію, Postgres це прод. На SQLite
+        # select_for_update не робить нічого, тому без другої гілки
+        # головна гарантія від гонок у CI не виконувалась би жодного разу.
+        database: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: licence_inventory
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
       - name: Тести
-        run: pytest
+        env:
+          POSTGRES_DB: ${{ matrix.database == 'postgres' && 'licence_inventory' || '' }}
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: 5432
+        run: pytest -q

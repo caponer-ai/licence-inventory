@@ -8,8 +8,14 @@ import os
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Читаємо .env, якщо він є. Змінні, вже задані в оточенні, мають
+# пріоритет (override=False): інакше файл на диску тихо перебивав би те,
+# що задав systemd або docker compose, і причину шукали б довго.
+load_dotenv(BASE_DIR / ".env", override=False)
 
 # Режим задається явно. Саме він, а не DEBUG, керує тим, чи можна
 # обійтись без секретного ключа і чи вмикати жорсткі налаштування.

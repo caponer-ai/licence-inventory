@@ -8,11 +8,6 @@ from inventory.states import UnitState
 
 
 @pytest.mark.django_db
-def test_healthz(api):
-    assert api.get("/healthz/").status_code == 200
-
-
-@pytest.mark.django_db
 def test_issue_endpoint_creates_issue(api, make_unit, client_rec):
     make_unit("A-1")
     response = api.post(

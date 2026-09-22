@@ -66,3 +66,13 @@ def make_unit(db):
         )
 
     return _make
+
+
+# Django за замовчуванням хешує паролі PBKDF2 із сотнями тисяч ітерацій.
+# Це правильно для прода і руйнівно для тестів: кожне створення
+# користувача коштувало близько 0.6 с, і на 76 тестах це давало 22 с
+# проти 2 с. Стійкість хешу ми тут не перевіряємо, тому в тестах
+# найдешевший хешер.
+@pytest.fixture(autouse=True)
+def fast_password_hashing(settings):
+    settings.PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]

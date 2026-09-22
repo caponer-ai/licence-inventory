@@ -251,39 +251,92 @@ def stale_issued_units():
 
 @transaction.atomic
 def sweep_expired(*, actor: str = "system") -> int:
-    """Перевести видані одиниці з вичерпаним строком у EXPIRED."""
+    """Перевести видані одиниці з вичерпаним строком у EXPIRED.
+
+    Єдине місце, де зміна стану йде повз ``move_state``, і це свідомо:
+    підмітання зачіпає скільки завгодно рядків, а порядковий save плюс
+    порядковий запис події дали б два запити на одиницю.
+
+    Інваріант при цьому не порушується. Перехід ISSUED -> EXPIRED
+    перевірений у білому списку (``test_transition_whitelist``), а події
+    пишуться тим самим пакетом, у тій самій транзакції. Тест
+    ``test_sweep_writes_one_event_per_unit`` стежить, щоб кількість подій
+    збігалась з кількістю переведених.
+    """
     now = timezone.now()
-    stale = Unit.objects.select_for_update().filter(
-        state=UnitState.ISSUED, expires_at__isnull=False, expires_at__lte=now
+    stale = list(
+        Unit.objects.select_for_update().filter(
+            state=UnitState.ISSUED, expires_at__isnull=False, expires_at__lte=now
+        )
     )
-    count = 0
-    for unit in stale:
-        move_state(unit, UnitState.EXPIRED, actor=actor, reason="строк вичерпано")
-        count += 1
-    return count
+    if not stale:
+        return 0
+
+    Unit.objects.filter(pk__in=[u.pk for u in stale]).update(
+        state=UnitState.EXPIRED, updated_at=now
+    )
+    Event.objects.bulk_create(
+        [
+            Event(
+                action="unit.state_changed",
+                actor=actor,
+                unit=u,
+                payload={
+                    "from": UnitState.ISSUED,
+                    "to": UnitState.EXPIRED,
+                    "reason": "строк вичерпано",
+                },
+            )
+            for u in stale
+        ]
+    )
+    return len(stale)
 
 
+@transaction.atomic
 def send_renewal_reminders(
     *, days: int, grace_days: int = DEFAULT_GRACE_DAYS, actor: str = "system"
 ) -> list[Unit]:
     """Нагадати про продовження, рівно один раз на один строк.
 
     Ідемпотентність тримає ``ReminderLog`` з унікальним ключем
-    (одиниця, тип, строк). Повторний запуск команди нічого не надішле,
-    тому cron можна ставити частіше, ніж раз на добу, і не боятись.
+    (одиниця, тип, строк). Повторний запуск нічого не надішле, тому cron
+    можна ставити частіше, ніж раз на добу, і не боятись дублів.
+
+    Кількість запитів стала і не залежить від розміру вибірки. Наївна
+    версія робила ``get_or_create`` плюс запис події на кожну одиницю,
+    тобто близько п'яти запитів на штуку: на десяти тисячах ліцензій це
+    десятки тисяч звернень до бази за один запуск cron.
+
+    ``select_for_update`` серіалізує два cron-и, що стартували одночасно:
+    без нього обидва прочитали б порожній ReminderLog і обидва відзвітували
+    б про відправку, хоча запис у базі лишився б один.
     """
-    sent: list[Unit] = []
-    for unit in expiring_units(days, grace_days=grace_days):
-        _, created = ReminderLog.objects.get_or_create(
-            unit=unit, kind="renewal", for_expires_at=unit.expires_at
+    units = list(expiring_units(days, grace_days=grace_days).select_for_update())
+    if not units:
+        return []
+
+    already = set(
+        ReminderLog.objects.filter(kind="renewal", unit__in=units).values_list(
+            "unit_id", "for_expires_at"
         )
-        if not created:
-            continue
-        log(
-            "reminder.sent",
-            actor=actor,
-            unit=unit,
-            expires_at=unit.expires_at.isoformat(),
-        )
-        sent.append(unit)
-    return sent
+    )
+    fresh = [u for u in units if (u.id, u.expires_at) not in already]
+    if not fresh:
+        return []
+
+    ReminderLog.objects.bulk_create(
+        [ReminderLog(unit=u, kind="renewal", for_expires_at=u.expires_at) for u in fresh]
+    )
+    Event.objects.bulk_create(
+        [
+            Event(
+                action="reminder.sent",
+                actor=actor,
+                unit=u,
+                payload={"expires_at": u.expires_at.isoformat()},
+            )
+            for u in fresh
+        ]
+    )
+    return fresh
