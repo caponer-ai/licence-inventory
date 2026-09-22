@@ -54,6 +54,28 @@ curl -XPOST localhost:8000/api/units/LIC-1/renew/ -H "$AUTH" -H 'Content-Type: a
 curl -H "$AUTH" 'localhost:8000/api/events/?unit_ref=LIC-1'
 ```
 
+## The one worth reading first
+
+One payment buys exactly one free replacement. Getting that right took three
+passes, and the first two both looked finished.
+
+A claim on a broken unit closes the issue, revokes the unit and hands out a
+replacement. But the second time a claim was filed against that same closed
+issue, moving REVOKED to REVOKED was a no-op, it passed silently, and the
+service handed out another free unit. One payment, two replacements. Line
+coverage never saw it, because every line on its own behaved correctly.
+
+That was fixed. Then two reviewers, reading independently, found the same
+hole still open: `approve_claim` read the claim without a lock, so two
+simultaneous approvals both passed the check and both issued a replacement.
+No index catches that either, because the two replacements are different
+units.
+
+It is closed now in three places, and `tests/test_concurrency.py` proves it
+under real threads on Postgres. The wider story, including the mutation run
+that found the guard nothing was defending, is in
+[docs/testing.md](docs/testing.md).
+
 ## Layout
 
 ```
