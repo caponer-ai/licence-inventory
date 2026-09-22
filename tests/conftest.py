@@ -76,3 +76,18 @@ def make_unit(db):
 @pytest.fixture(autouse=True)
 def fast_password_hashing(settings):
     settings.PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
+
+
+@pytest.fixture(autouse=True)
+def clean_throttle_cache():
+    """Лічильники частоти живуть у процесі і переживають тест.
+
+    Без очищення тести діляться одним відром на 127.0.0.1: порядок
+    запуску починає впливати на результат, і колись це впаде без
+    видимої причини.
+    """
+    from django.core.cache import cache
+
+    cache.clear()
+    yield
+    cache.clear()

@@ -35,6 +35,18 @@ class WarrantyExpired(DomainError):
     pass
 
 
+class UnitExpired(DomainError):
+    pass
+
+
+class IssueClosed(DomainError):
+    pass
+
+
+class ClaimAlreadyOpen(DomainError):
+    pass
+
+
 def log(action: str, *, actor: str, unit=None, issue=None, **payload) -> Event:
     return Event.objects.create(
         action=action, actor=actor, unit=unit, issue=issue, payload=payload
@@ -82,6 +94,14 @@ def issue_unit(
         raise UnitNotAvailable(f"одиниця {unit_ref} у стані {unit.state}")
 
     now = timezone.now()
+    # Вільна одиниця з простроченим строком це мертвий товар. Стан
+    # AVAILABLE каже лише «нікому не видана», він нічого не каже про те,
+    # чи вона ще працює. Без цієї перевірки клієнт платить і отримує
+    # ліцензію, яка вже не діє.
+    if unit.expires_at and unit.expires_at <= now:
+        raise UnitExpired(
+            f"строк одиниці {unit_ref} вийшов {unit.expires_at:%Y-%m-%d}, спершу продовжіть"
+        )
     issue = Issue.objects.create(
         unit=unit,
         client=client,
@@ -146,13 +166,34 @@ def renew_unit(
 
 @transaction.atomic
 def open_claim(*, issue_id: int, reason: str, actor: str = "system") -> WarrantyClaim:
-    """Прийняти рекламацію, якщо гарантійне вікно ще відкрите."""
-    issue = Issue.objects.select_related("unit").get(pk=issue_id)
+    """Прийняти рекламацію, якщо гарантійне вікно ще відкрите.
+
+    Трьох перевірок мало б бути одна, але кожна закриває свій шлях до
+    безкоштовної заміни:
+
+    1. Вікно. Очевидна.
+    2. Видача ще активна. Без цього по закритій видачі можна було
+       відкрити другу рекламацію: стара одиниця вже REVOKED, повторний
+       перехід у REVOKED це no-op, і сервіс спокійно видавав ще одну
+       заміну. Одна оплачена видача давала дві безкоштовні одиниці.
+    3. Відкритої рекламації ще немає. Інакше та сама діра досягається
+       двома заявками паралельно, до першого схвалення.
+
+    ``select_for_update`` потрібен саме через пункт 3: два одночасні
+    запити інакше обидва побачили б нуль відкритих заявок.
+    """
+    issue = Issue.objects.select_for_update().select_related("unit").get(pk=issue_id)
     now = timezone.now()
+
     if now > issue.warranty_until:
         raise WarrantyExpired(
             f"гарантія на видачу {issue_id} закінчилась {issue.warranty_until:%Y-%m-%d %H:%M}"
         )
+    if not issue.is_active:
+        raise IssueClosed(f"видача {issue_id} вже закрита, рекламація неможлива")
+    if issue.claims.filter(state=ClaimState.OPEN).exists():
+        raise ClaimAlreadyOpen(f"по видачі {issue_id} вже є відкрита рекламація")
+
     claim = WarrantyClaim.objects.create(issue=issue, reason=reason)
     log("claim.opened", actor=actor, unit=issue.unit, issue=issue, reason=reason)
     return claim

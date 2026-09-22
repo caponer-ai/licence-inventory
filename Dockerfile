@@ -8,7 +8,7 @@ WORKDIR /app
 # Залежності окремим шаром: код міняється щодня, requirements рідко,
 # тому кеш шару переживає більшість збірок.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt gunicorn
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 

@@ -118,8 +118,11 @@ class IssueViewSet(
     def claim(self, request, pk=None):
         payload = ClaimCreateSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
+        # get_object, а не int(pk): DRF пропускає в pk будь-що без
+        # слеша і крапки, тому int("abc") летів ValueError і ставав 500.
+        issue = self.get_object()
         claim = services.open_claim(
-            issue_id=int(pk),
+            issue_id=issue.pk,
             reason=payload.validated_data["reason"],
             actor=actor_of(request),
         )
@@ -134,8 +137,9 @@ class ClaimViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
     def approve(self, request, pk=None):
         payload = ClaimApproveSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
+        claim = self.get_object()
         new_issue = services.approve_claim(
-            claim_id=int(pk),
+            claim_id=claim.pk,
             replacement_ref=payload.validated_data["replacement_ref"],
             actor=actor_of(request),
         )
@@ -143,7 +147,7 @@ class ClaimViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
-        claim = services.reject_claim(claim_id=int(pk), actor=actor_of(request))
+        claim = services.reject_claim(claim_id=self.get_object().pk, actor=actor_of(request))
         return Response(WarrantyClaimSerializer(claim).data)
 
 

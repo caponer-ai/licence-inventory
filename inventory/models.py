@@ -142,6 +142,16 @@ class WarrantyClaim(TimeStamped):
 
     class Meta:
         ordering = ["-created_at"]
+        constraints = [
+            # Та сама логіка, що в сервісі, але на рівні БД: якщо два
+            # запити прослизнуть паралельно, впаде другий, а не
+            # зʼявиться друга безкоштовна заміна.
+            models.UniqueConstraint(
+                fields=["issue"],
+                condition=models.Q(state="open"),
+                name="one_open_claim_per_issue",
+            )
+        ]
 
     def __str__(self) -> str:
         return f"{self.issue.unit.ref}: {self.get_state_display()}"

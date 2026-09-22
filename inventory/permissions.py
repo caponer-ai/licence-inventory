@@ -9,7 +9,7 @@
 помилки не покривається історією.
 """
 
-from rest_framework.permissions import SAFE_METHODS, BasePermission
+from rest_framework.permissions import BasePermission
 
 
 class IsAdminForDestroy(BasePermission):
@@ -22,10 +22,3 @@ class IsAdminForDestroy(BasePermission):
         if request.method == "DELETE":
             return bool(user.is_staff)
         return True
-
-
-class ReadOnly(BasePermission):
-    """Для журналу: історію читають, але не правлять."""
-
-    def has_permission(self, request, view) -> bool:
-        return request.method in SAFE_METHODS
