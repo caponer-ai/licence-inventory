@@ -1,11 +1,11 @@
 """HTTP-шар. Тонкий навмисно.
 
-В'юха робить три речі: валідує вхід серіалізатором, кличе сервіс,
-перекладає доменну помилку в код відповіді. Ніякої логіки тут немає,
-тому її нема де продублювати.
+В'юха робить дві речі: валідує вхід серіалізатором і кличе сервіс. Помилки
+перекладає в коди відповідей один обробник у ``inventory/exceptions.py``,
+тому тут немає жодного try/except: їх неможливо забути в новій дії.
 """
 
-from django.core.exceptions import ObjectDoesNotExist
+from django.db import connection
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
@@ -25,16 +25,9 @@ from .serializers import (
 )
 
 
-def domain_response(exc: services.DomainError) -> Response:
-    """Порушене бізнес-правило це 409, а не 500.
-
-    500 означає «ми зламались». Тут система працює правильно і свідомо
-    відмовляє, тому конфлікт станів.
-    """
-    return Response(
-        {"detail": str(exc), "code": type(exc).__name__},
-        status=status.HTTP_409_CONFLICT,
-    )
+def actor_of(request) -> str:
+    """Хто зробив дію. Для анонімного запиту username порожній."""
+    return getattr(request.user, "username", "") or "anonymous"
 
 
 class ClientViewSet(viewsets.ModelViewSet):
@@ -43,6 +36,14 @@ class ClientViewSet(viewsets.ModelViewSet):
 
 
 class UnitViewSet(viewsets.ModelViewSet):
+    """Інвентар.
+
+    ``state`` і ``expires_at`` тут тільки на читання. Змінити їх можна
+    лише через дії (``renew``) або сервіс, бо кожна така зміна має лишити
+    слід: запис у ``Renewal`` і подію в журналі. Інакше звичайний PUT
+    переписав би строк дії, і пояснити клієнту нову дату було б нічим.
+    """
+
     queryset = Unit.objects.all()
     serializer_class = UnitSerializer
     lookup_field = "ref"
@@ -56,33 +57,39 @@ class UnitViewSet(viewsets.ModelViewSet):
     def renew(self, request, ref=None):
         payload = RenewSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
-        try:
-            renewal = services.renew_unit(
-                unit_ref=ref,
-                actor=request.user.username or "anonymous",
-                **payload.validated_data,
-            )
-        except ObjectDoesNotExist:
-            return Response(
-                {"detail": "одиницю не знайдено"}, status=status.HTTP_404_NOT_FOUND
-            )
-        except services.DomainError as exc:
-            return domain_response(exc)
+        renewal = services.renew_unit(unit_ref=ref, actor=actor_of(request), **payload.validated_data)
         return Response(
-            {"unit_ref": ref, "new_expires_at": renewal.new_expires_at},
+            {
+                "unit_ref": ref,
+                "previous_expires_at": renewal.previous_expires_at,
+                "new_expires_at": renewal.new_expires_at,
+            },
             status=status.HTTP_200_OK,
         )
 
     @action(detail=False, methods=["get"])
     def expiring(self, request):
+        """Пагінація така сама, як у звичайного списку.
+
+        Різна форма відповіді на двох сусідніх ендпоінтах змушує клієнта
+        писати дві гілки розбору, і рано чи пізно одну з них забувають.
+        """
         try:
             days = int(request.query_params.get("days", 14))
         except ValueError:
             return Response(
-                {"detail": "days має бути числом"}, status=status.HTTP_400_BAD_REQUEST
+                {"detail": "days має бути цілим числом", "code": "BadRequest"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
+        if days < 0:
+            return Response(
+                {"detail": "days не може бути відʼємним", "code": "BadRequest"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         units = services.expiring_units(days)
-        return Response(UnitSerializer(units, many=True).data)
+        page = self.paginate_queryset(units)
+        return self.get_paginated_response(UnitSerializer(page, many=True).data)
 
 
 class IssueViewSet(
@@ -97,79 +104,46 @@ class IssueViewSet(
     def create(self, request, *args, **kwargs):
         payload = IssueCreateSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
-        try:
-            issue = services.issue_unit(
-                actor=request.user.username or "anonymous", **payload.validated_data
-            )
-        except ObjectDoesNotExist:
-            return Response(
-                {"detail": "одиницю або клієнта не знайдено"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-        except services.DomainError as exc:
-            return domain_response(exc)
+        issue = services.issue_unit(actor=actor_of(request), **payload.validated_data)
         return Response(IssueSerializer(issue).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"])
     def claim(self, request, pk=None):
         payload = ClaimCreateSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
-        try:
-            claim = services.open_claim(
-                issue_id=int(pk),
-                reason=payload.validated_data["reason"],
-                actor=request.user.username or "anonymous",
-            )
-        except ObjectDoesNotExist:
-            return Response(
-                {"detail": "видачу не знайдено"}, status=status.HTTP_404_NOT_FOUND
-            )
-        except services.DomainError as exc:
-            return domain_response(exc)
-        return Response(
-            WarrantyClaimSerializer(claim).data, status=status.HTTP_201_CREATED
+        claim = services.open_claim(
+            issue_id=int(pk),
+            reason=payload.validated_data["reason"],
+            actor=actor_of(request),
         )
+        return Response(WarrantyClaimSerializer(claim).data, status=status.HTTP_201_CREATED)
 
 
-class ClaimViewSet(
-    mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet
-):
-    queryset = WarrantyClaim.objects.all()
+class ClaimViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    queryset = WarrantyClaim.objects.select_related("issue__unit", "replacement_unit")
     serializer_class = WarrantyClaimSerializer
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
         payload = ClaimApproveSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
-        try:
-            new_issue = services.approve_claim(
-                claim_id=int(pk),
-                replacement_ref=payload.validated_data["replacement_ref"],
-                actor=request.user.username or "anonymous",
-            )
-        except ObjectDoesNotExist:
-            return Response({"detail": "не знайдено"}, status=status.HTTP_404_NOT_FOUND)
-        except services.DomainError as exc:
-            return domain_response(exc)
+        new_issue = services.approve_claim(
+            claim_id=int(pk),
+            replacement_ref=payload.validated_data["replacement_ref"],
+            actor=actor_of(request),
+        )
         return Response(IssueSerializer(new_issue).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
-        try:
-            claim = services.reject_claim(
-                claim_id=int(pk), actor=request.user.username or "anonymous"
-            )
-        except ObjectDoesNotExist:
-            return Response({"detail": "не знайдено"}, status=status.HTTP_404_NOT_FOUND)
-        except services.DomainError as exc:
-            return domain_response(exc)
+        claim = services.reject_claim(claim_id=int(pk), actor=actor_of(request))
         return Response(WarrantyClaimSerializer(claim).data)
 
 
 class EventViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """Журнал лише на читання. Історію не редагують."""
 
-    queryset = Event.objects.all()
+    queryset = Event.objects.select_related("unit", "issue")
     serializer_class = EventSerializer
 
     def get_queryset(self):
@@ -180,4 +154,19 @@ class EventViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
 @api_view(["GET"])
 def healthz(request):
-    return Response({"status": "ok"})
+    """Пульс, який справді щось перевіряє.
+
+    Ендпоінт, що завжди відповідає «ok», марний: балансувальник вважає
+    інстанс живим, коли база вже недоступна. Тому робимо найдешевший
+    можливий запит і віддаємо 503, якщо він не пройшов.
+    """
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+    except Exception as exc:  # noqa: BLE001 - назовні не пускаємо деталі
+        return Response(
+            {"status": "error", "database": type(exc).__name__},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    return Response({"status": "ok", "database": "ok"})

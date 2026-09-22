@@ -81,7 +81,7 @@ def test_expiring_endpoint_filters_by_horizon(api, make_unit):
     make_unit("A-5", state=UnitState.ISSUED, expires_in_days=3)
     make_unit("A-6", state=UnitState.ISSUED, expires_in_days=90)
 
-    refs = [row["ref"] for row in api.get("/api/units/expiring/?days=14").data]
+    refs = [row["ref"] for row in api.get("/api/units/expiring/?days=14").data["results"]]
 
     assert refs == ["A-5"]
 

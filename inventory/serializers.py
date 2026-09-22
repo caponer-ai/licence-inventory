@@ -25,7 +25,9 @@ class UnitSerializer(serializers.ModelSerializer):
             "expires_at",
             "note",
         ]
-        read_only_fields = ["state"]
+        # expires_at змінюється лише через renew, щоб кожна нова дата
+        # мала запис у Renewal і подію в журналі.
+        read_only_fields = ["state", "expires_at"]
 
 
 class IssueSerializer(serializers.ModelSerializer):

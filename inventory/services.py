@@ -217,21 +217,36 @@ def reject_claim(*, claim_id: int, actor: str = "system") -> WarrantyClaim:
     return claim
 
 
-def expiring_units(days: int):
+#: Скільки днів після закінчення строку одиниця ще вважається живою.
+#: Далі це мертвий інвентар: нагадувати про продовження ліцензії, що
+#: протухла два роки тому, означає спамити людину, яка давно пішла.
+DEFAULT_GRACE_DAYS = 30
+
+
+def expiring_units(days: int, *, grace_days: int = DEFAULT_GRACE_DAYS):
     """Одиниці, у яких строк спливає протягом ``days`` днів.
 
-    Межа: тільки видані і вже прострочені. Вільні одиниці нагадувати
-    нема кому.
+    Вікно двостороннє. Верхня межа очевидна: ``зараз + days``. Нижня
+    менш очевидна і важливіша: без неї в вибірку падає весь архів, бо
+    умова «строк <= зараз + 14 днів» істинна і для 2019 року.
+
+    Тільки видані і прострочені. Вільна одиниця нікому не видана,
+    нагадувати нема кому.
     """
     now = timezone.now()
-    return (
-        Unit.objects.filter(
-            state__in=[UnitState.ISSUED, UnitState.EXPIRED],
-            expires_at__isnull=False,
-            expires_at__lte=now + timedelta(days=days),
-        )
-        .order_by("expires_at")
-    )
+    return Unit.objects.filter(
+        state__in=[UnitState.ISSUED, UnitState.EXPIRED],
+        expires_at__isnull=False,
+        expires_at__gte=now - timedelta(days=grace_days),
+        expires_at__lte=now + timedelta(days=days),
+    ).order_by("expires_at")
+
+
+def stale_issued_units():
+    """Видані одиниці, у яких строк уже вичерпано. Без блокування, для перегляду."""
+    return Unit.objects.filter(
+        state=UnitState.ISSUED, expires_at__isnull=False, expires_at__lte=timezone.now()
+    ).order_by("expires_at")
 
 
 @transaction.atomic
@@ -248,7 +263,9 @@ def sweep_expired(*, actor: str = "system") -> int:
     return count
 
 
-def send_renewal_reminders(*, days: int, actor: str = "system") -> list[Unit]:
+def send_renewal_reminders(
+    *, days: int, grace_days: int = DEFAULT_GRACE_DAYS, actor: str = "system"
+) -> list[Unit]:
     """Нагадати про продовження, рівно один раз на один строк.
 
     Ідемпотентність тримає ``ReminderLog`` з унікальним ключем
@@ -256,7 +273,7 @@ def send_renewal_reminders(*, days: int, actor: str = "system") -> list[Unit]:
     тому cron можна ставити частіше, ніж раз на добу, і не боятись.
     """
     sent: list[Unit] = []
-    for unit in expiring_units(days):
+    for unit in expiring_units(days, grace_days=grace_days):
         _, created = ReminderLog.objects.get_or_create(
             unit=unit, kind="renewal", for_expires_at=unit.expires_at
         )
